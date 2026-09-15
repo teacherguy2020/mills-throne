@@ -2,20 +2,29 @@
 
 ## Shelly activity sensing
 
-Replace the current smart outlet with a Shelly 1PM Gen4 UL and begin in observational mode. Capture complete cycles including:
+The Shelly 1PM Gen4 UL replaces the current smart outlet and begins in observational mode. Capture complete cycles including:
 
 ```text
 idle → credit/coin → mechanism search → record load → playing
      → reject/end → subsequent selections → final idle
 ```
 
-Use collected power/current data to establish an idle threshold, an active/start threshold with hysteresis, start and stop debounce durations, and behavior during loading, rejecting, and multiple selections.
+Initial observed values are approximately:
 
-Do not choose production thresholds from the conceptual design alone. Shelly should send simple local events to Now-Playing after these values are established.
+```text
+lights off, idle       ~7 W
+lights on, idle        ~53 W
+record playing         ~70 W
+stack/motor moving     >200 W
+```
+
+These suggest temporary test thresholds around `>150 W` for activity and `<60 W` for idle, but they are not production values. Use hysteresis and debounce, and capture behavior during loading, rejecting, and multiple selections before finalizing anything.
+
+Do not choose production thresholds from the conceptual design alone. Shelly may provide independent confirmation, but the AS5600/Pico may ultimately become the primary mechanism-state signal.
 
 ## Number-wheel identification
 
-The preferred record-identification method is reading the existing Mills number-wheel shaft with a stationary AS5600 absolute magnetic angle sensor:
+The preferred record-identification method is reading the existing Mills selector shaft with a stationary AS5600 absolute magnetic angle sensor. The wheel’s original screw does not rotate; the opposite end of the shaft is exposed and is the current magnet mounting point:
 
 ```text
 Mills number-wheel shaft
@@ -32,13 +41,15 @@ Typical connections:
 ```text
 AS5600 VCC → Pico 3.3V
 AS5600 GND → Pico GND
-AS5600 SDA → Pico I2C SDA GPIO
-AS5600 SCL → Pico I2C SCL GPIO
+AS5600 SDA → Pico GP4 (physical pin 6)
+AS5600 SCL → Pico GP5 (physical pin 7)
 ```
 
-`OUT`, `DIR`, and `GPO` are probably unnecessary.
+`OUT`, `DIR`, and `GPO` are unnecessary for this design. The AS5600 is bench-tested successfully at I²C address `0x36`; the current diagnostic program reports raw angle, degrees, movement, stable time, magnet status, AGC, and magnitude.
 
-Before selecting this approach, measure the shaft travel. AS5600 is single-turn absolute sensing, so slots 1–20 must produce unique angles within one revolution (or another physically valid mapping). Calibrate measured raw angles for every position; do not assume equal spacing. Position 20 is also the home/off position and cannot identify record 20 by itself.
+The final mount must preserve magnet centering and air gap. Use a rigid, adjustable nonmagnetic bracket; temporary plastic spacing is suitable for bench testing, but the magnet must not touch the sensor during rotation. AS5600 is single-turn absolute sensing, so record actual installed raw values for REST and positions 1–20 rather than assuming equal spacing.
+
+The larger gap between positions 20 and 1 is the Mills REST position. A stable angle at 20 during reset is not slot 20; a stable 20 reached after downward search may be slot 20. Direction and phase history are required if the mechanism passes through 20 more than once.
 
 ## Settle detection
 
@@ -68,3 +79,5 @@ with the internal pull-up enabled. A gently actuated switch at the tray/linkage 
 ## Alternative
 
 Stack height could encode the 20 positions using Hall sensors, a linear sensor, or optical sensing. Twenty Hall sensors are expected to add excessive wiring and mounting complexity, so shaft-angle sensing remains preferred pending mechanical inspection.
+
+<!-- Last updated: 2026-09-15 -->

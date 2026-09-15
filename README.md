@@ -34,7 +34,43 @@ The Mills remains the authoritative audio source and selector. Now-Playing is th
 
 ## Status
 
-Project kickoff. No production thresholds, calibration values, or control software have been selected yet. Initial work is observational and diagnostic.
+Shelly activity webhooks, AS5600 bench testing, integrated Pico diagnostics, and authenticated OTA updates are working. The AS5600 has not yet been mounted or calibrated on the Mills. Production thresholds, calibrated angles, tolerance windows, timing, and final Pico-to-Now-Playing event rules remain to be determined experimentally.
+
+## Pico software and OTA updates
+
+The Pico program is in [`micropicoMills/main.py`](micropicoMills/main.py). The current program includes the Shelly activity webhooks and AS5600 diagnostic sampling, but does not yet identify calibrated record slots.
+
+The Pico supports authenticated local-LAN OTA updates at:
+
+```text
+POST http://<pico-ip>/ota
+Authorization: Bearer <OTA_TOKEN>
+```
+
+Before using OTA, add the same private token to the ignored local `micropicoMills/secrets.py` and to the Pico's `secrets.py`:
+
+```python
+OTA_TOKEN = "use-a-long-random-local-token"
+```
+
+Deploy the current program from the Mac with:
+
+```bash
+./deploy-pico.sh
+```
+
+The script defaults to Pico `10.0.0.7`. Override it with `PICO_IP=... ./deploy-pico.sh`, or provide a different source file as the first argument. It stages the upload as `main.new.py`, validates Python syntax, preserves the previous program as `main.backup.py`, installs the new `main.py`, reboots, and confirms the Pico responds afterward. The script reads `OTA_TOKEN` from the local ignored `micropicoMills/secrets.py`; alternatively set `MILLS_OTA_TOKEN` in the environment.
+
+### OTA recovery
+
+An interrupted upload or syntax-invalid file leaves the existing `main.py` untouched. If installation succeeds but the new program fails during boot, connect by USB/serial and rename the preserved backup:
+
+```text
+main.py       → main.failed.py   (optional)
+main.backup.py → main.py
+```
+
+Then reboot the Pico. The backup is the last program that was running before the OTA replacement. Keep the Pico accessible by USB until OTA has been tested successfully.
 
 ## Related systems
 
