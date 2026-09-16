@@ -772,7 +772,9 @@ def calibration_html():
         rows = "<tr><td colspan='8'>No calibration points captured.</td></tr>"
     current_rest_raw = calibration_points.get("REST", {}).get("raw", "")
     current_reading = (
-        "Raw angle: {} ({} degrees); wheel moving: {}; stable: {} ms; "
+        "<strong>Raw angle:</strong> {} &nbsp; "
+        "<strong>Degrees:</strong> {}&deg;<br>"
+        "Wheel moving: {}; stable: {} ms; "
         "magnet: {}; AGC: {}; magnitude: {}"
     ).format(
         "unknown" if raw_angle is None else raw_angle,
@@ -792,7 +794,7 @@ def calibration_html():
         "<h1>Mills angle calibration</h1>"
         "<p>Hold the mechanism completely still, then capture the current point."
         " REST is separate from slot 20.</p>"
-        "<h2>Current reading</h2>"
+        "<h2>Current AS5600 angle</h2>"
         "<p id='currentReading'>{}</p>"
         "<button onclick='location.reload()'>Refresh current reading</button>"
         "<h2>REST override</h2>"
