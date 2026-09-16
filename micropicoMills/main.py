@@ -378,6 +378,15 @@ def connect_wifi():
     return wlan
 
 
+def send_all(client, data):
+    sent_total = 0
+    while sent_total < len(data):
+        sent = client.send(data[sent_total:])
+        if not sent:
+            raise OSError("socket send failed")
+        sent_total += sent
+
+
 def http_response(client, status, body, content_type="application/json"):
     payload = body.encode()
     header = (
@@ -387,8 +396,8 @@ def http_response(client, status, body, content_type="application/json"):
         "Cache-Control: no-store\r\n"
         "Connection: close\r\n\r\n"
     ).format(status, content_type, len(payload))
-    client.send(header.encode())
-    client.send(payload)
+    send_all(client, header.encode())
+    send_all(client, payload)
 
 
 def parse_http_url(url):
@@ -433,9 +442,9 @@ def notify_now_playing(path, payload=None):
             "Content-Length: {}\r\n"
             "Connection: close\r\n\r\n"
         ).format(path, host, auth, content_type, len(body)).encode()
-        client.send(request)
+        send_all(client, request)
         if body:
-            client.send(body)
+            send_all(client, body)
         response = client.recv(512)
         if not response:
             raise OSError("empty Now-Playing response")
