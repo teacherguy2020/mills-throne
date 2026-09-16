@@ -4,8 +4,9 @@ The Shelly reports that the Mills record stack is moving by calling:
 
     GET or POST /integrations/mills/stack-moving
 
-This version records the event and samples the AS5600 for diagnostic use.
-It does not yet contain calibration tables or selection reporting.
+This version records the event, notifies Now-Playing on active/idle
+transitions, samples the AS5600 for diagnostic use, provides a manual
+calibration capture page, and reports settled calibrated selections.
 Copy secrets.example.py to secrets.py and fill in the Wi-Fi settings.
 """
 
@@ -14,6 +15,11 @@ import machine
 import os
 import socket
 import time
+
+try:
+    import ujson as json
+except ImportError:
+    import json
 
 import network
 from machine import I2C, Pin
@@ -24,12 +30,24 @@ try:
 except ImportError:
     OTA_TOKEN = ""
 
+try:
+    from secrets import TRACK_KEY
+except ImportError:
+    TRACK_KEY = ""
+
+try:
+    from secrets import NOW_PLAYING_URL
+except ImportError:
+    NOW_PLAYING_URL = "http://10.0.0.4:3101"
+
 
 WEB_PORT = 80
 WIFI_RETRY_MS = 10000
 STACK_MOVING_PATH = "/integrations/mills/stack-moving"
 IDLE_PATH = "/integrations/mills/idle"
 OTA_PATH = "/ota"
+CALIBRATION_PATH = "/calibration"
+CALIBRATION_CAPTURE_PATH = "/calibration/capture"
 OTA_TEMP_FILE = "main.new.py"
 OTA_BACKUP_FILE = "main.backup.py"
 OTA_MAX_BYTES = 64 * 1024
@@ -41,6 +59,20 @@ MAGNITUDE_REGISTER = 0x1B
 AS5600_SAMPLE_MS = 100
 MOVEMENT_THRESHOLD_RAW = 2
 MOVEMENT_HOLD_MS = 250
+# Shelly reports a threshold crossing, so do not end a Mills session on
+# one brief low-power sample. This is provisional until AS5600 REST sensing
+# becomes the authoritative end-of-session signal.
+IDLE_CONFIRM_MS = 20000
+CALIBRATION_FILE = "mills_calibration.json"
+CALIBRATION_TEMP_FILE = "mills_calibration.new.json"
+CALIBRATION_SAMPLE_COUNT = 15
+CALIBRATION_SAMPLE_INTERVAL_MS = 80
+# Accept occasional AS5600 glitches while requiring a strong steady majority.
+CALIBRATION_INLIER_WINDOW_RAW = 32
+CALIBRATION_MIN_INLIERS = 12
+CALIBRATION_MATCH_WINDOW_RAW = 24
+CALIBRATION_DISPLAY_STABLE_MS = 300
+SELECTION_RETRY_MS = 5000
 
 wifi = None
 mills_active = False
@@ -62,8 +94,210 @@ wheel_moved_while_active = False
 stable_since_ms = None
 ota_reboot_pending = False
 last_ota_status = "not used"
+last_now_playing_event = None
+pending_idle_since_ms = None
+calibration_points = {}
+selection_armed = False
+last_selection_slot = None
+last_selection_error = None
+last_selection_attempt_ms = None
 
 i2c = I2C(0, sda=Pin(4), scl=Pin(5), freq=100000)
+
+
+def load_calibration():
+    global calibration_points
+    try:
+        with open(CALIBRATION_FILE, "r") as calibration_file:
+            loaded = json.load(calibration_file)
+        if isinstance(loaded, dict):
+            calibration_points = loaded
+            print("Loaded calibration points:", ", ".join(sorted(calibration_points.keys())))
+    except (OSError, ValueError, TypeError) as error:
+        calibration_points = {}
+        if not isinstance(error, OSError):
+            print("Ignoring invalid calibration file:", error)
+
+
+def save_calibration():
+    """Write a complete calibration file before replacing the old one."""
+    safe_remove(CALIBRATION_TEMP_FILE)
+    with open(CALIBRATION_TEMP_FILE, "w") as calibration_file:
+        json.dump(calibration_points, calibration_file)
+        calibration_file.flush()
+    safe_remove(CALIBRATION_FILE)
+    os.rename(CALIBRATION_TEMP_FILE, CALIBRATION_FILE)
+
+
+def sensor_flags(status):
+    return {
+        "detected": bool(status & 0x20),
+        "weak": bool(status & 0x10),
+        "strong": bool(status & 0x08),
+    }
+
+
+def circular_distance(first, second):
+    delta = (first - second + 2048) % 4096 - 2048
+    return abs(delta)
+
+
+def read_sensor_sample():
+    current_raw = read_u16(RAW_ANGLE_REGISTER) & 0x0FFF
+    status = i2c.readfrom_mem(AS5600_ADDRESS, STATUS_REGISTER, 1)[0]
+    agc = i2c.readfrom_mem(AS5600_ADDRESS, AGC_REGISTER, 1)[0]
+    magnitude = read_u16(MAGNITUDE_REGISTER)
+    return current_raw, status, agc, magnitude
+
+
+def calibration_point_from_path(request_path):
+    if "?" not in request_path:
+        return None
+    query = request_path.split("?", 1)[1]
+    for item in query.split("&"):
+        pair = item.split("=", 1)
+        if len(pair) == 2 and pair[0] == "point":
+            point = pair[1].upper()
+            if point == "REST":
+                return point
+            try:
+                slot = int(point)
+                if 1 <= slot <= 20:
+                    return str(slot)
+            except ValueError:
+                pass
+    return None
+
+
+def calibration_sort_key(point):
+    if point == "REST":
+        return (0, 0)
+    try:
+        return (1, int(point))
+    except ValueError:
+        return (2, point)
+
+
+def capture_calibration_point(point):
+    """Capture a stable sample set for REST or one physical slot."""
+    global raw_angle, angle_degrees, sensor_status, agc_value, magnitude_value
+
+    if AS5600_ADDRESS not in i2c.scan():
+        raise OSError("AS5600 not detected")
+
+    samples = []
+    statuses = []
+    agcs = []
+    magnitudes = []
+    for index in range(CALIBRATION_SAMPLE_COUNT):
+        sample_raw, sample_status, sample_agc, sample_magnitude = read_sensor_sample()
+        samples.append(sample_raw)
+        statuses.append(sample_status)
+        agcs.append(sample_agc)
+        magnitudes.append(sample_magnitude)
+        if index + 1 < CALIBRATION_SAMPLE_COUNT:
+            time.sleep_ms(CALIBRATION_SAMPLE_INTERVAL_MS)
+
+    ordered = sorted(samples)
+    median_raw = ordered[len(ordered) // 2]
+    inliers = [
+        sample for sample in samples
+        if circular_distance(sample, median_raw) <= CALIBRATION_INLIER_WINDOW_RAW
+    ]
+    if len(inliers) < CALIBRATION_MIN_INLIERS:
+        raise ValueError(
+            "angle unstable; only {}/{} samples agreed (full spread {} raw counts)".format(
+                len(inliers), len(samples), max(samples) - min(samples)))
+
+    # Measure the spread of agreeing samples, accounting for 4095 -> 0.
+    inlier_ordered = sorted(inliers)
+    gaps = [
+        inlier_ordered[index + 1] - inlier_ordered[index]
+        for index in range(len(inlier_ordered) - 1)
+    ]
+    gaps.append(inlier_ordered[0] + 4096 - inlier_ordered[-1])
+    observed_spread = 4096 - max(gaps)
+
+    status = statuses[-1]
+    raw_angle = median_raw
+    angle_degrees = median_raw * 360.0 / 4096.0
+    sensor_status = status
+    agc_value = agcs[-1]
+    magnitude_value = magnitudes[-1]
+    flags = sensor_flags(status)
+    calibration_points[point] = {
+        "raw": median_raw,
+        "degrees": round(angle_degrees, 2),
+        "sample_count": len(samples),
+        "min_raw": min(samples),
+        "max_raw": max(samples),
+        "spread_raw": observed_spread,
+        "inlier_count": len(inliers),
+        "outlier_count": len(samples) - len(inliers),
+        "detected": flags["detected"],
+        "weak": flags["weak"],
+        "strong": flags["strong"],
+        "agc": agcs[-1],
+        "magnitude": magnitudes[-1],
+    }
+    save_calibration()
+    return calibration_points[point]
+
+
+def calibrated_position():
+    """Return the nearest settled calibration point."""
+    if raw_angle is None or not calibration_points:
+        return None, None, "unknown"
+    if wheel_moving or stable_since_ms is None:
+        return None, None, "moving/not settled"
+    if time.ticks_diff(time.ticks_ms(), stable_since_ms) < CALIBRATION_DISPLAY_STABLE_MS:
+        return None, None, "settling"
+
+    nearest_point = None
+    nearest_distance = None
+    for point, value in calibration_points.items():
+        try:
+            point_raw = int(value["raw"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        distance = circular_distance(raw_angle, point_raw)
+        if nearest_distance is None or distance < nearest_distance:
+            nearest_point = point
+            nearest_distance = distance
+
+    if nearest_point is None:
+        return None, None, "unknown"
+    if nearest_distance > CALIBRATION_MATCH_WINDOW_RAW:
+        return None, nearest_distance, "no match"
+    return nearest_point, nearest_distance, "match"
+
+
+def process_selection():
+    """Report one newly settled physical slot after movement."""
+    global selection_armed, last_selection_slot, last_selection_error
+    global last_selection_attempt_ms
+
+    if not mills_active or not selection_armed:
+        return
+    now = time.ticks_ms()
+    if (last_selection_attempt_ms is not None
+            and time.ticks_diff(now, last_selection_attempt_ms) < SELECTION_RETRY_MS):
+        return
+    position, _, position_state = calibrated_position()
+    if position_state != "match" or position == "REST":
+        return
+
+    try:
+        slot = int(position)
+        last_selection_attempt_ms = now
+        notify_now_playing("/integrations/mills/selection", {"slot": slot})
+        last_selection_slot = slot
+        last_selection_error = None
+        selection_armed = False
+        print("Mills selection reported:", slot)
+    except Exception as error:
+        last_selection_error = "selection failed: {}".format(error)
+        print(last_selection_error)
 
 
 def connect_wifi():
@@ -96,6 +330,65 @@ def http_response(client, status, body, content_type="application/json"):
     ).format(status, content_type, len(payload))
     client.send(header.encode())
     client.send(payload)
+
+
+def parse_http_url(url):
+    text = str(url).strip().rstrip("/")
+    if not text.startswith("http://"):
+        raise ValueError("Now-Playing URL must use http://")
+    authority_and_path = text[7:]
+    slash = authority_and_path.find("/")
+    authority = authority_and_path if slash < 0 else authority_and_path[:slash]
+    if ":" in authority:
+        host, port_text = authority.rsplit(":", 1)
+        port = int(port_text)
+    else:
+        host, port = authority, 80
+    if not host:
+        raise ValueError("Now-Playing URL has no host")
+    return host, port
+
+
+def notify_now_playing(path, payload=None):
+    """Notify Now-Playing and require a successful HTTP response."""
+    host, port = parse_http_url(NOW_PLAYING_URL)
+    address = socket.getaddrinfo(host, port)[0][-1]
+    client = socket.socket()
+    try:
+        client.settimeout(4)
+        client.connect(address)
+        auth = ""
+        if TRACK_KEY:
+            auth = "X-Track-Key: {}\r\n".format(TRACK_KEY)
+        if payload is None:
+            body = b""
+            content_type = ""
+        else:
+            body = json.dumps(payload).encode()
+            content_type = "Content-Type: application/json\r\n"
+        request = (
+            "POST {} HTTP/1.1\r\n"
+            "Host: {}\r\n"
+            "{}"
+            "{}"
+            "Content-Length: {}\r\n"
+            "Connection: close\r\n\r\n"
+        ).format(path, host, auth, content_type, len(body)).encode()
+        client.send(request)
+        if body:
+            client.send(body)
+        response = client.recv(512)
+        if not response:
+            raise OSError("empty Now-Playing response")
+        first_line = response.split(b"\r\n", 1)[0].decode()
+        parts = first_line.split()
+        if len(parts) < 2 or not parts[1].isdigit():
+            raise OSError("malformed Now-Playing response")
+        status_code = int(parts[1])
+        if status_code < 200 or status_code >= 300:
+            raise OSError("Now-Playing returned HTTP {}".format(status_code))
+    finally:
+        client.close()
 
 
 def safe_remove(path):
@@ -190,7 +483,7 @@ def update_sensor():
     global sensor_present, raw_angle, angle_degrees, sensor_status
     global agc_value, magnitude_value, previous_raw_angle
     global last_angle_change_ms, wheel_moving, wheel_moved_while_active
-    global stable_since_ms
+    global stable_since_ms, selection_armed
 
     now = time.ticks_ms()
     try:
@@ -218,6 +511,7 @@ def update_sensor():
             stable_since_ms = None
             if mills_active:
                 wheel_moved_while_active = True
+                selection_armed = True
         elif stable_since_ms is None:
             stable_since_ms = now
 
@@ -243,13 +537,18 @@ def sensor_status_text():
 
 def status_json():
     ip = wifi.ifconfig()[0] if wifi and wifi.isconnected() else None
+    position, position_distance, position_state = calibrated_position()
     return (
         '{{"mills_active":{},"last_stack_event_ms":{},'
         '"stack_event_count":{},"ip":{},"sensor_present":{},'
         '"raw_angle":{},"angle_degrees":{},"wheel_moving":{},'
         '"wheel_moved_while_active":{},"stable_ms":{},'
         '"sensor_status":"{}","agc":{},"magnitude":{},'
-        '"ota_status":"{}"}}'
+        '"ota_status":"{}","last_now_playing_event":{},'
+        '"idle_pending_ms":{},"calibration_points":{},'
+        '"calibrated_position":{},"calibrated_distance_raw":{},'
+        '"calibrated_position_state":"{}","selection_armed":{},'
+        '"last_selection_slot":{},"last_selection_error":{}}}'
     ).format(
         "true" if mills_active else "false",
         "null" if last_stack_event_ms is None else last_stack_event_ms,
@@ -265,6 +564,15 @@ def status_json():
         "null" if agc_value is None else agc_value,
         "null" if magnitude_value is None else magnitude_value,
         last_ota_status,
+        "null" if last_now_playing_event is None else '"{}"'.format(last_now_playing_event),
+        "null" if pending_idle_since_ms is None else time.ticks_diff(time.ticks_ms(), pending_idle_since_ms),
+        len(calibration_points),
+        "null" if position is None else '"{}"'.format(position),
+        "null" if position_distance is None else position_distance,
+        position_state,
+        "true" if selection_armed else "false",
+        "null" if last_selection_slot is None else last_selection_slot,
+        "null" if last_selection_error is None else '"{}"'.format(last_selection_error),
     )
 
 
@@ -273,8 +581,20 @@ def status_html():
     last_event = "never" if last_stack_event_ms is None else "{} ms ago".format(
         time.ticks_diff(time.ticks_ms(), last_stack_event_ms)
     )
+    calibrated = "none" if not calibration_points else ", ".join(
+        sorted(calibration_points.keys(), key=calibration_sort_key))
+    position, position_distance, position_state = calibrated_position()
+    if position_state == "match":
+        current_position = "REST" if position == "REST" else "slot {}".format(position)
+        current_position += " ({} raw counts away)".format(position_distance)
+    elif position_state == "no match":
+        current_position = "no calibrated match (nearest is {} raw counts away)".format(
+            position_distance)
+    else:
+        current_position = position_state
     return (
         "<!doctype html><html><head><meta charset='utf-8'>"
+        "<meta http-equiv='refresh' content='2'>"
         "<title>Mills Pico</title></head><body>"
         "<h1>Mills Pico webhook receiver</h1>"
         "<p><b>IP:</b> {}</p>"
@@ -285,6 +605,16 @@ def status_html():
         "<p><b>Raw angle:</b> {} ({:.2f} degrees)</p>"
         "<p><b>Wheel moving:</b> {}</p>"
         "<p><b>Wheel moved while active:</b> {}</p>"
+        "<p><b>Magnet status:</b> {}</p>"
+        "<p><b>AGC:</b> {}</p>"
+        "<p><b>Magnitude:</b> {}</p>"
+        "<p><b>Angle stable for:</b> {} ms</p>"
+        "<p><b>Idle confirmation:</b> {} </p>"
+        "<p><b>Calibrated points:</b> {}</p>"
+        "<p><b>Current calibrated position:</b> {}</p>"
+        "<p><b>Selection reporting armed:</b> {}</p>"
+        "<p><b>Last selection reported:</b> {}</p>"
+        "<p><a href='/calibrate'>Open calibration page</a></p>"
         "<p>Webhook: <code>{}</code></p>"
         "</body></html>"
     ).format(
@@ -297,15 +627,90 @@ def status_html():
         0.0 if angle_degrees is None else angle_degrees,
         "YES" if wheel_moving else "NO",
         "YES" if wheel_moved_while_active else "NO",
+        sensor_status_text(),
+        "unknown" if agc_value is None else agc_value,
+        "unknown" if magnitude_value is None else magnitude_value,
+        "unknown" if stable_since_ms is None else time.ticks_diff(time.ticks_ms(), stable_since_ms),
+        "pending" if pending_idle_since_ms is not None else "not pending",
+        calibrated,
+        current_position,
+        "YES" if selection_armed else "NO",
+        "none" if last_selection_slot is None else "slot {}".format(last_selection_slot),
         STACK_MOVING_PATH,
     )
+
+
+def calibration_json():
+    return json.dumps({"points": calibration_points})
+
+
+def calibration_html():
+    buttons = "<button onclick=\"capture('REST')\">Capture REST</button>"
+    for slot in range(1, 21):
+        buttons += " <button onclick=\"capture('{}')\">Capture {}</button>".format(slot, slot)
+
+    rows = ""
+    for point in sorted(calibration_points.keys(), key=calibration_sort_key):
+        value = calibration_points[point]
+        quality = "weak" if value.get("weak") else "ok"
+        rows += (
+            "<tr><td>{}</td><td>{}</td><td>{:.2f}</td><td>{}</td>"
+            "<td>{}</td><td>{}</td><td>{}</td>"
+            "<td><button onclick=\"clearPoint('{}')\">Clear</button></td></tr>"
+        ).format(
+            point,
+            value.get("raw", "?"),
+            value.get("degrees", 0.0),
+            value.get("spread_raw", "?"),
+            value.get("magnitude", "?"),
+            quality,
+            value.get("sample_count", "?"),
+            point,
+        )
+    if not rows:
+        rows = "<tr><td colspan='8'>No calibration points captured.</td></tr>"
+
+    return (
+        "<!doctype html><html><head><meta charset='utf-8'>"
+        "<meta name='viewport' content='width=device-width, initial-scale=1'>"
+        "<title>Mills calibration</title></head><body>"
+        "<h1>Mills angle calibration</h1>"
+        "<p>Hold the mechanism completely still, then capture the current point."
+        " REST is separate from slot 20.</p>"
+        "<p>{}</p>"
+        "<p id='message'></p>"
+        "<table border='1' cellpadding='4'><tr><th>Point</th><th>Raw</th>"
+        "<th>Degrees</th><th>Spread</th><th>Magnitude</th><th>Quality</th>"
+        "<th>Samples</th><th>Action</th></tr>{}</table>"
+        "<p><a href='/'>Back to status</a></p>"
+        "<script>"
+        "async function capture(point) {{"
+        " const message=document.getElementById('message');"
+        " message.textContent='Capturing '+point+'; keep it still...';"
+        " try {{ const response=await fetch('/calibration/capture?point='+point,{{method:'POST'}});"
+        " const data=await response.json();"
+        " if (!response.ok) throw new Error(data.error || 'capture failed');"
+        " message.textContent='Captured '+point+' at raw '+data.calibration.raw;"
+        " setTimeout(()=>location.reload(),500);"
+        " }} catch (error) {{ message.textContent='ERROR: '+error; }}"
+        "}}"
+        "async function clearPoint(point) {{"
+        " if (!confirm('Clear calibration point '+point+'?')) return;"
+        " const response=await fetch('/calibration/clear?point='+point,{{method:'POST'}});"
+        " if (!response.ok) {{ document.getElementById('message').textContent='ERROR: clear failed'; return; }}"
+        " location.reload();"
+        "}}"
+        "</script></body></html>"
+    ).format(buttons, rows)
 
 
 def handle_request(client):
     global mills_active, last_stack_event_ms, stack_event_count
     global wheel_moved_while_active, stable_since_ms
     global last_event_method, last_event_path, last_event_error
-    global ota_reboot_pending, last_ota_status
+    global ota_reboot_pending, last_ota_status, last_now_playing_event
+    global pending_idle_since_ms, selection_armed, last_selection_slot
+    global last_selection_error, last_selection_attempt_ms
 
     try:
         method, request_path, headers, initial_body, content_length = read_request(client)
@@ -318,23 +723,78 @@ def handle_request(client):
             http_response(client, "200 OK", status_html(), "text/html")
         elif path == "/status" and method == "GET":
             http_response(client, "200 OK", status_json())
+        elif path == CALIBRATION_PATH and method == "GET":
+            http_response(client, "200 OK", calibration_json())
+        elif path == "/calibrate" and method == "GET":
+            http_response(client, "200 OK", calibration_html(), "text/html")
+        elif path == CALIBRATION_CAPTURE_PATH and method == "POST":
+            point = calibration_point_from_path(request_path)
+            if point is None:
+                http_response(client, "400 Bad Request", '{"error":"point must be REST or 1-20"}')
+            else:
+                try:
+                    captured = capture_calibration_point(point)
+                    http_response(client, "200 OK", json.dumps({
+                        "ok": True,
+                        "point": point,
+                        "calibration": captured,
+                    }))
+                    print("Calibration captured:", point, captured)
+                except Exception as error:
+                    print("CALIBRATION ERROR:", error)
+                    http_response(client, "409 Conflict", json.dumps({"error": str(error)}))
+        elif path == "/calibration/clear" and method == "POST":
+            point = calibration_point_from_path(request_path)
+            if point is None:
+                http_response(client, "400 Bad Request", '{"error":"point must be REST or 1-20"}')
+            elif point in calibration_points:
+                del calibration_points[point]
+                save_calibration()
+                print("Calibration cleared:", point)
+                http_response(client, "200 OK", json.dumps({"ok": True, "point": point}))
+            else:
+                http_response(client, "404 Not Found", '{"error":"calibration point not found"}')
         elif path == STACK_MOVING_PATH and method in ("GET", "POST"):
             # Shelly may repeat a power condition while it remains true.
-            # Treat only the inactive -> active transition as a new event.
-            if not mills_active:
-                mills_active = True
-                wheel_moved_while_active = False
-                stable_since_ms = None
-                last_stack_event_ms = time.ticks_ms()
-                stack_event_count += 1
-                print("Shelly: Mills stack moving (event {})".format(stack_event_count))
+            # Treat only the inactive -> active transition as a new event,
+            # but let renewed activity cancel a pending idle confirmation.
+            if mills_active:
+                if pending_idle_since_ms is not None:
+                    pending_idle_since_ms = None
+                    print("Shelly: renewed activity; pending idle canceled")
+                else:
+                    print("Shelly: repeated stack-moving event ignored")
             else:
-                print("Shelly: repeated stack-moving event ignored")
+                try:
+                    notify_now_playing("/integrations/mills/start")
+                    mills_active = True
+                    pending_idle_since_ms = None
+                    wheel_moved_while_active = False
+                    stable_since_ms = None
+                    selection_armed = False
+                    last_selection_slot = None
+                    last_selection_error = None
+                    last_selection_attempt_ms = None
+                    last_stack_event_ms = time.ticks_ms()
+                    stack_event_count += 1
+                    last_now_playing_event = "start"
+                    print("Shelly: Mills stack moving (event {})".format(stack_event_count))
+                except Exception as error:
+                    last_event_error = "Now-Playing start failed: {}".format(error)
+                    last_now_playing_event = "start failed"
+                    print(last_event_error)
+                    http_response(client, "502 Bad Gateway", '{"error":"Now-Playing start failed"}')
+                    return
             http_response(client, "200 OK", status_json())
         elif path == IDLE_PATH and method in ("GET", "POST"):
-            mills_active = False
-            wheel_moved_while_active = False
-            print("Shelly: Mills idle")
+            if mills_active:
+                if pending_idle_since_ms is None:
+                    pending_idle_since_ms = time.ticks_ms()
+                    print("Shelly: idle candidate; waiting for confirmation")
+                else:
+                    print("Shelly: repeated idle event ignored; confirmation pending")
+            else:
+                print("Shelly: repeated idle event ignored")
             http_response(client, "200 OK", status_json())
         elif path == OTA_PATH and method == "POST":
             supplied_auth = headers.get("authorization", "")
@@ -368,6 +828,35 @@ def handle_request(client):
             pass
 
 
+def process_pending_idle():
+    """End the session only after low-power state remains long enough."""
+    global mills_active, pending_idle_since_ms, wheel_moved_while_active
+    global selection_armed
+    global last_event_error, last_now_playing_event
+
+    if not mills_active or pending_idle_since_ms is None:
+        return
+    if time.ticks_diff(time.ticks_ms(), pending_idle_since_ms) < IDLE_CONFIRM_MS:
+        return
+
+    try:
+        notify_now_playing("/integrations/mills/stop")
+        mills_active = False
+        pending_idle_since_ms = None
+        wheel_moved_while_active = False
+        selection_armed = False
+        last_now_playing_event = "stop"
+        last_event_error = None
+        print("Shelly: Mills idle confirmed")
+    except Exception as error:
+        # Keep Mills active through a transient Now-Playing outage and retry
+        # after another confirmation interval.
+        pending_idle_since_ms = time.ticks_ms()
+        last_event_error = "Now-Playing stop failed: {}".format(error)
+        last_now_playing_event = "stop failed"
+        print(last_event_error)
+
+
 def start_server():
     server = socket.socket()
     try:
@@ -385,6 +874,7 @@ def start_server():
 
 
 print("\nMills Pico preliminary webhook receiver")
+load_calibration()
 wifi = connect_wifi()
 server = None
 if wifi.isconnected():
@@ -424,6 +914,9 @@ while True:
     if time.ticks_diff(now, last_sensor_sample_ms) >= AS5600_SAMPLE_MS:
         last_sensor_sample_ms = now
         update_sensor()
+        process_selection()
+
+    process_pending_idle()
 
     if time.ticks_diff(now, last_wifi_retry_ms) >= WIFI_RETRY_MS:
         last_wifi_retry_ms = now

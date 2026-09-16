@@ -18,7 +18,10 @@ record playing         ~70 W
 stack/motor moving     >200 W
 ```
 
-These suggest temporary test thresholds around `>150 W` for activity and `<60 W` for idle, but they are not production values. Use hysteresis and debounce, and capture behavior during loading, rejecting, and multiple selections before finalizing anything.
+The current temporary Shelly thresholds are approximately `>55 W` for
+activity and `<50 W` for idle. Pico-side idle debounce smooths short dips;
+these remain test values, not production values. Continue capturing behavior
+during loading, rejecting, and multiple selections before finalizing anything.
 
 Do not choose production thresholds from the conceptual design alone. Shelly may provide independent confirmation, but the AS5600/Pico may ultimately become the primary mechanism-state signal.
 
@@ -62,6 +65,18 @@ A candidate selection is valid only when:
 
 An initial diagnostic value of roughly 300–500 ms may be explored, but timing must be finalized from observed behavior.
 
+## Manual calibration capture
+
+The Pico exposes a temporary calibration page at:
+
+```text
+http://<pico-ip>/calibrate
+```
+
+With the mechanism stopped, capture the distinct REST gap first, then capture physical positions 1–20 individually. The Pico takes multiple samples and stores the median raw angle along with the sample spread and magnetic diagnostics in its local `mills_calibration.json` file. REST is stored as `REST`, not as slot 0, and remains distinct from slot 20.
+
+Calibration may be captured while the sensor reports a weak field for exploratory purposes, but those values are provisional. The current Pico has REST plus all 20 slots stored, with generally 0–2 raw-count inlier spread per capture; the AS5600 still reports `weak=YES` and occasional outliers. Before production use, improve the mount until the field is detected and stable without `weak` or `strong` status, then repeat the affected captures. The Pico now uses saved points for provisional display and settled-slot reporting, and sends the matched slot to Now-Playing for validation against real Mills cycles.
+
 ## Optional tray sensor
 
 The V-156-1C25-style roller-lever SPDT microswitches are dry-contact switches, not relays. A future Pico input may use:
@@ -80,4 +95,4 @@ with the internal pull-up enabled. A gently actuated switch at the tray/linkage 
 
 Stack height could encode the 20 positions using Hall sensors, a linear sensor, or optical sensing. Twenty Hall sensors are expected to add excessive wiring and mounting complexity, so shaft-angle sensing remains preferred pending mechanical inspection.
 
-<!-- Last updated: 2026-09-15 -->
+<!-- Last updated: 2026-09-16 -->

@@ -7,12 +7,13 @@ Integration project for connecting a 1939 Mills Throne of Music jukebox to the e
 Observe the original Mills mechanism and enhance the listening experience without controlling or replacing its mechanical intelligence. The integration will:
 
 1. Detect when the Mills becomes active.
-2. Pause MPD only when it was playing before the Mills started.
+2. Preserve enough of the pre-Mills MPD session to restore it later.
 3. Switch the Denon AVR-4520CI from moOde (`Aux 1`) to the Mills (`Phono`) through the existing Harmony Hub websocket.
 4. Identify the physical record eventually, preferably from the Mills number-wheel shaft.
-5. Display matching Now-Playing metadata and artwork for clients and TVs.
-6. Detect sustained return to true idle.
-7. Switch the Denon back to moOde and resume MPD only when this integration paused it.
+5. Play the corresponding entry from the dedicated 20-track Mills playlist in MPD so existing Now-Playing metadata, artwork, progress, and client behavior continue to work normally.
+6. Keep MPD on the current Mills surrogate while the physical Mills proceeds through its session.
+7. Detect sustained return to true idle.
+8. Switch the Denon back to moOde and restore the pre-Mills MPD session.
 
 The Mills remains authoritative for record selection, ordering, mechanical operation, and audible audio. Now-Playing is the orchestration and display layer; it follows the physical machine rather than attempting to control or predict it.
 
@@ -48,6 +49,60 @@ The Pico should report a calibrated slot only after the wheel has moved/searchin
 
 When a physical selection is identified, Now-Playing may play the corresponding digital Mills playlist entry in MPD as a display surrogate. The Denon is switched to Phono, so the physical Mills remains the sound source while MPD supplies metadata, artwork, and progress to the displays.
 
+## Source-switching and selection bridge
+
+The initial integrated test was limited to Denon source switching. The current bridge also reports newly settled calibrated slots:
+
+```text
+Shelly activity threshold
+  → POST /integrations/mills/stack-moving on Pico
+  → Pico accepts the inactive → active transition once
+  → POST /integrations/mills/start to Now-Playing
+  → Harmony: Denon Aux 1 → Phono
+
+Shelly sustained idle threshold
+  → POST /integrations/mills/idle on Pico
+  → Pico accepts the active → idle transition once
+  → POST /integrations/mills/stop to Now-Playing
+  → Harmony: Denon Phono → Aux 1
+```
+
+After AS5600 movement and settling, the Pico sends:
+
+```text
+Pico calibrated slot N
+  → POST /integrations/mills/selection {"slot": N}
+  → Now-Playing entry N in Mills Playlist
+```
+
+The Pico forwards only state transitions, not every repeated Shelly action. If Now-Playing or Harmony is unavailable, the Pico keeps the transition pending and returns an error so repeated Shelly delivery can retry. A mechanism power drop to the approximately 70 W record-playing level is not a session end; STOP is reserved for confirmed return to the true idle range.
+
+Now-Playing routes require the configured `TRACK_KEY` in the Pico's `X-Track-Key` header. The current Pico configuration uses:
+
+```python
+NOW_PLAYING_URL = "http://10.0.0.4:3101"
+```
+
+The Pico now performs provisional AS5600 slot identification and sends settled selections. Now-Playing accepts `POST /integrations/mills/selection`, maps slot `N` directly to entry `N` in `Mills Playlist`, and has shown the correct metadata in live testing. MPD Mills-surrogate playback and pre-Mills MPD snapshot/restore remain under refinement; the current test may leave MPD paused while the physical Mills supplies the audible audio.
+
+## MPD surrogate playback
+
+At the beginning of a Mills session, Now-Playing takes one snapshot of the user's existing MPD session. The snapshot must ultimately preserve enough information to restore the prior listening experience, including as applicable:
+
+- whether MPD was playing or paused
+- the existing queue/playlist
+- the current track
+- the current playback position
+- any other state required by the final restore implementation
+
+The exact snapshot and restore mechanism remains **TBD** until we determine the safest way to preserve and reinstate the existing MPD queue and playback position. The integration must not destructively lose the user's queue while starting Mills surrogate playback.
+
+After the Pico reports a settled physical selection, Now-Playing maps the physical slot to the corresponding entry in the dedicated 20-track Mills playlist and plays that digital entry in MPD. This allows normal Now-Playing metadata, artwork, progress, and client behavior to operate. MPD audio is not heard because the Denon is on `Phono`; the physical Mills record remains the actual audio source.
+
+The pre-Mills MPD state is not restored between records. All physical records from the first departure from REST through the final return to REST belong to one Mills session, and the digital surrogate may change from one Mills selection to the next.
+
+At confirmed session end, Now-Playing switches the Denon back to `Aux 1` and then restores the saved pre-Mills MPD state. Restoration occurs only after the final REST/session-end confirmation, not merely when one record rejects or the selector passes through position 20.
+
 ## Documentation
 
 - [Architecture and state model](docs/architecture.md)
@@ -56,11 +111,25 @@ When a physical selection is identified, Now-Playing may play the corresponding 
 
 ## Status
 
-Shelly activity webhooks, AS5600 bench testing, integrated Pico diagnostics, and authenticated OTA updates are working. The AS5600 has not yet been mounted or calibrated on the Mills. The next milestone is synchronized observation of REST, positions 1–20, reset/search movement, and complete single- and multiple-record sessions. Production thresholds, calibrated angles, tolerance windows, timing, and final Pico-to-Now-Playing event rules remain experimental.
+Shelly activity webhooks, AS5600 bench testing, integrated Pico diagnostics, authenticated OTA updates, provisional REST/1–20 calibration, and settled-slot reporting are working. Live testing has confirmed that the detected physical slot can select the corresponding `Mills Playlist` entry in Now-Playing. The current Shelly thresholds are approximately `>55 W` for activity and `<50 W` for idle, with Pico-side idle debounce. The magnetic field remains flagged weak, and multi-record sequencing, tolerance windows, final REST confirmation, and MPD state restoration remain experimental.
 
 ## Pico software and OTA updates
 
-The Pico program is in [`micropicoMills/main.py`](micropicoMills/main.py). The current program includes the Shelly activity webhooks and AS5600 diagnostic sampling, but does not yet identify calibrated record slots.
+The Pico program is in [`micropicoMills/main.py`](micropicoMills/main.py). The current program includes the Shelly activity webhooks, AS5600 diagnostic sampling, manual calibration capture, and provisional settled-slot reporting.
+
+The Pico status page provides a calibrated-position hint. Once the wheel is settled, it compares the current angle with the saved points and shows `REST`, `slot N`, or `no calibrated match`. During an active Mills session, a newly settled slot 1–20 is also sent to Now-Playing as `POST /integrations/mills/selection`; this remains provisional while the weak-field sensor mounting is being evaluated.
+
+### Provisional calibration
+
+After the sensor and magnet are rigidly mounted, open the Pico calibration page:
+
+```text
+http://<pico-ip>/calibrate
+```
+
+Capture the current mechanical gap as `REST`, then capture slots 1–20 while each physical selector position is stopped. Each capture samples the AS5600 for about 1.1 seconds and saves the median raw angle, observed sample spread, magnetic status, AGC, and magnitude to the Pico-local `mills_calibration.json` file. `REST` is intentionally separate from slot 20.
+
+Weak magnet readings are allowed but are recorded as provisional. The current installed calibration contains REST and slots 1–20; individual captures generally have 0–2 raw-count inlier spread, but the AS5600 continues to report `weak=YES` and occasional outliers. Improve the magnet alignment/air gap and repeat calibration before treating the values as production-quality. The Pico uses the saved points for provisional settled-slot reporting, and live testing has confirmed correct slot-to-playlist metadata mapping.
 
 The Pico supports authenticated local-LAN OTA updates at:
 
