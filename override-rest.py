@@ -37,9 +37,13 @@ def rebuild_from_relationships(points, new_rest_raw):
     proposed = {"REST": dict(points["REST"], raw=new_rest_raw)}
     old_previous = int(points["REST"]["raw"])
     new_previous = new_rest_raw
+    signed_steps = []
     for point in ordered[1:]:
         old_raw = int(points[point]["raw"])
         step = (old_raw - old_previous) % 4096
+        if step > 2048:
+            step -= 4096
+        signed_steps.append(step)
         new_raw = (new_previous + step) % 4096
         proposed[point] = dict(
             points[point],
@@ -48,6 +52,15 @@ def rebuild_from_relationships(points, new_rest_raw):
         )
         old_previous = old_raw
         new_previous = new_raw
+    closing_step = (int(points["REST"]["raw"]) - old_previous) % 4096
+    if closing_step > 2048:
+        closing_step -= 4096
+    signed_steps.append(closing_step)
+    total_turn = sum(signed_steps)
+    if abs(abs(total_turn) - 4096) > 64:
+        raise ValueError(
+            "adjacent relationships do not make one turn (total {} raw counts)"
+            .format(total_turn))
     return proposed
 
 
@@ -103,6 +116,7 @@ def main():
         print_table(
             proposed,
             "Proposed relationship-based rebuild (REST delta {}):".format(offset))
+        print("Adjacent relationships validated as one complete turn.")
         endpoint = "/calibration/shift?{}".format(urllib.parse.urlencode({
             "rest_raw": args.rest_raw,
         }))

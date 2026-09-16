@@ -84,6 +84,8 @@ The calibration page's REST override changes only the REST point and leaves slot
 
 For a rigid rotation with unchanged centering, tilt, and air gap, the script also supports an explicit `--rebuild-from-relationships` mode. It calculates each saved circular step from REST through slot 20 and rebuilds the table from the Pico's current saved REST value; do not use this mode after changing the physical geometry. Individual row overrides or fresh captures are safer then.
 
+Each step uses the signed shortest circular difference in raw counts (`-2048..2047`), and each next point is reconstructed cumulatively with modulo-4096 wrapping. The script verifies that the ordered points close as approximately one complete turn before an apply.
+
 Calibration may be captured while the sensor reports a weak field for exploratory purposes, but those values are provisional. The current Pico has REST plus all 20 slots stored, with generally 0–2 raw-count inlier spread per capture; the AS5600 still reports `weak=YES` and occasional outliers. Before production use, improve the mount until the field is detected and stable without `weak` or `strong` status, then repeat the affected captures. The Pico now uses saved points for provisional display and settled-slot reporting, and sends the matched slot to Now-Playing for validation against real Mills cycles.
 
 ## Optional tray sensor

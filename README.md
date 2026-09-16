@@ -145,6 +145,8 @@ If the sensor/magnet assembly was only rotated as a rigid unit without changing 
 
 The full-table mode calculates its offset from the Pico's current saved REST value; it does not use a hard-coded historical REST value. For changed geometry, override or recapture individual rows instead.
 
+The relationship rebuild uses the measured circular step from each point to the next, choosing the signed representation in the range `-2048..2047`, then cumulatively wraps each new raw value into `0..4095`. It also checks that the ordered REST-through-20 path closes as approximately one complete turn before allowing an apply.
+
 Weak magnet readings are allowed but are recorded as provisional. The current installed calibration contains REST and slots 1–20; individual captures generally have 0–2 raw-count inlier spread, but the AS5600 continues to report `weak=YES` and occasional outliers. Improve the magnet alignment/air gap and repeat calibration before treating the values as production-quality. The Pico uses the saved points for provisional settled-slot reporting, and live testing has confirmed correct slot-to-playlist metadata mapping.
 
 The Pico supports authenticated local-LAN OTA updates at:
