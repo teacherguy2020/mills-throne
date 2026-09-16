@@ -771,6 +771,19 @@ def calibration_html():
     if not rows:
         rows = "<tr><td colspan='8'>No calibration points captured.</td></tr>"
     current_rest_raw = calibration_points.get("REST", {}).get("raw", "")
+    current_reading = (
+        "Raw angle: {} ({} degrees); wheel moving: {}; stable: {} ms; "
+        "magnet: {}; AGC: {}; magnitude: {}"
+    ).format(
+        "unknown" if raw_angle is None else raw_angle,
+        "unknown" if angle_degrees is None else "{:.2f}".format(angle_degrees),
+        "YES" if wheel_moving else "NO",
+        "unknown" if stable_since_ms is None else time.ticks_diff(
+            time.ticks_ms(), stable_since_ms),
+        sensor_status_text(),
+        "unknown" if agc_value is None else agc_value,
+        "unknown" if magnitude_value is None else magnitude_value,
+    )
 
     return (
         "<!doctype html><html><head><meta charset='utf-8'>"
@@ -779,6 +792,9 @@ def calibration_html():
         "<h1>Mills angle calibration</h1>"
         "<p>Hold the mechanism completely still, then capture the current point."
         " REST is separate from slot 20.</p>"
+        "<h2>Current reading</h2>"
+        "<p id='currentReading'>{}</p>"
+        "<button onclick='location.reload()'>Refresh current reading</button>"
         "<h2>REST override</h2>"
         "<p>Enter a new settled REST raw angle to rotate the existing table."
         " Use this only when the sensor/magnet geometry has not changed.</p>"
@@ -838,7 +854,7 @@ def calibration_html():
         " }} catch (error) {{ message.textContent='ERROR: '+error; }}"
         "}}"
         "</script></body></html>"
-    ).format(current_rest_raw, buttons, rows)
+    ).format(current_rest_raw, current_reading, buttons, rows)
 
 
 def handle_request(client):
