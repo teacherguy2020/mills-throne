@@ -75,7 +75,14 @@ http://<pico-ip>/calibrate
 
 With the mechanism stopped, capture the distinct REST gap first, then capture physical positions 1–20 individually. The Pico takes multiple samples and stores the median raw angle along with the sample spread and magnetic diagnostics in its local `mills_calibration.json` file. REST is stored as `REST`, not as slot 0, and remains distinct from slot 20.
 
-When the sensor/magnet assembly has only been rotated as a rigid unit, the existing table can be re-zeroed with `POST /calibration/shift?from_rest_raw=<old-rest-raw>&rest_raw=<new-rest-raw>`. This applies one circular offset to the saved slot angles and changes REST to the new raw value. It is not appropriate if centering, tilt, or air gap changed; in that case, recapture the positions.
+The calibration page's REST override changes only the REST point and leaves slots 1–20 unchanged. This is the safe choice after a physical mount or magnet-geometry change. The Mac-side `override-rest.py` script previews this operation and applies it only with `--apply`:
+
+```bash
+./override-rest.py <new-rest-raw>
+./override-rest.py <new-rest-raw> --apply
+```
+
+For a rigid rotation with unchanged centering, tilt, and air gap, the script also supports an explicit `--rebase-all` mode. It calculates the offset from the Pico's current saved REST value and shifts every saved slot; do not use this mode after changing the physical geometry. Individual row overrides or fresh captures are safer then.
 
 Calibration may be captured while the sensor reports a weak field for exploratory purposes, but those values are provisional. The current Pico has REST plus all 20 slots stored, with generally 0–2 raw-count inlier spread per capture; the AS5600 still reports `weak=YES` and occasional outliers. Before production use, improve the mount until the field is detected and stable without `weak` or `strong` status, then repeat the affected captures. The Pico now uses saved points for provisional display and settled-slot reporting, and sends the matched slot to Now-Playing for validation against real Mills cycles.
 

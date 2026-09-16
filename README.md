@@ -129,7 +129,21 @@ http://<pico-ip>/calibrate
 
 Capture the current mechanical gap as `REST`, then capture slots 1–20 while each physical selector position is stopped. Each capture samples the AS5600 for about 1.1 seconds and saves the median raw angle, observed sample spread, magnetic status, AGC, and magnitude to the Pico-local `mills_calibration.json` file. `REST` is intentionally separate from slot 20.
 
-If the sensor/magnet assembly is rotated as a rigid unit without changing its geometry, an existing table can be re-zeroed to a new REST reading without recapturing every slot. Send a POST to `/calibration/shift?from_rest_raw=<old-rest-raw>&rest_raw=<new-rest-raw>`. For the current provisional table, the re-zero operation used `from_rest_raw=847&rest_raw=295`; it applies the same circular raw-angle offset to slots 1–20 and stores REST as raw 295. Use this only when the enclosure change preserves the shaft coupling, centering, and air gap; otherwise recapture the affected points.
+The calibration page's REST override changes only the REST point and leaves slots 1–20 unchanged. This is the safe choice when the physical mount or magnet geometry has changed. The Mac-side [`override-rest.py`](override-rest.py) script provides the same behavior with a preview by default:
+
+```bash
+./override-rest.py 295
+./override-rest.py 295 --apply
+```
+
+If the sensor/magnet assembly was only rotated as a rigid unit without changing centering, tilt, or air gap, the script can preview a full-table circular rebase. This is deliberately explicit because it is unsafe for a changed geometry:
+
+```bash
+./override-rest.py 295 --rebase-all
+./override-rest.py 295 --rebase-all --apply
+```
+
+The full-table mode calculates its offset from the Pico's current saved REST value; it does not use a hard-coded historical REST value. For changed geometry, override or recapture individual rows instead.
 
 Weak magnet readings are allowed but are recorded as provisional. The current installed calibration contains REST and slots 1–20; individual captures generally have 0–2 raw-count inlier spread, but the AS5600 continues to report `weak=YES` and occasional outliers. Improve the magnet alignment/air gap and repeat calibration before treating the values as production-quality. The Pico uses the saved points for provisional settled-slot reporting, and live testing has confirmed correct slot-to-playlist metadata mapping.
 
