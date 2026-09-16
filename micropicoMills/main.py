@@ -48,6 +48,7 @@ IDLE_PATH = "/integrations/mills/idle"
 OTA_PATH = "/ota"
 CALIBRATION_PATH = "/calibration"
 CALIBRATION_CAPTURE_PATH = "/calibration/capture"
+CALIBRATION_SHIFT_PATH = "/calibration/shift"
 OTA_TEMP_FILE = "main.new.py"
 OTA_BACKUP_FILE = "main.backup.py"
 OTA_MAX_BYTES = 64 * 1024
@@ -169,6 +170,38 @@ def calibration_point_from_path(request_path):
     return None
 
 
+def calibration_rest_raw_from_path(request_path):
+    if "?" not in request_path:
+        return None
+    query = request_path.split("?", 1)[1]
+    for item in query.split("&"):
+        pair = item.split("=", 1)
+        if len(pair) == 2 and pair[0] == "rest_raw":
+            try:
+                raw = int(pair[1])
+                if 0 <= raw <= 4095:
+                    return raw
+            except ValueError:
+                pass
+    return None
+
+
+def calibration_source_rest_raw_from_path(request_path):
+    if "?" not in request_path:
+        return None
+    query = request_path.split("?", 1)[1]
+    for item in query.split("&"):
+        pair = item.split("=", 1)
+        if len(pair) == 2 and pair[0] == "from_rest_raw":
+            try:
+                raw = int(pair[1])
+                if 0 <= raw <= 4095:
+                    return raw
+            except ValueError:
+                pass
+    return None
+
+
 def calibration_sort_key(point):
     if point == "REST":
         return (0, 0)
@@ -242,6 +275,32 @@ def capture_calibration_point(point):
     }
     save_calibration()
     return calibration_points[point]
+
+
+def shift_calibration_to_rest(new_rest_raw, source_rest_raw=None):
+    """Rotate the table from a known REST point to new_rest_raw."""
+    if "REST" not in calibration_points:
+        raise ValueError("REST calibration point is missing")
+    if source_rest_raw is None:
+        old_rest_raw = int(calibration_points["REST"]["raw"])
+    else:
+        old_rest_raw = source_rest_raw
+    offset = (new_rest_raw - old_rest_raw) % 4096
+    for point, value in calibration_points.items():
+        if point == "REST":
+            continue
+        old_raw = int(value["raw"])
+        value["raw"] = (old_raw + offset) % 4096
+        value["degrees"] = round(value["raw"] * 360.0 / 4096.0, 2)
+        for key in ("min_raw", "max_raw"):
+            if key in value:
+                value[key] = (int(value[key]) + offset) % 4096
+        value["offset_raw"] = offset
+    calibration_points["REST"]["raw"] = new_rest_raw
+    calibration_points["REST"]["degrees"] = round(new_rest_raw * 360.0 / 4096.0, 2)
+    calibration_points["REST"]["offset_raw"] = offset
+    save_calibration()
+    return old_rest_raw, offset
 
 
 def calibrated_position():
@@ -727,6 +786,31 @@ def handle_request(client):
             http_response(client, "200 OK", calibration_json())
         elif path == "/calibrate" and method == "GET":
             http_response(client, "200 OK", calibration_html(), "text/html")
+        elif path == CALIBRATION_SHIFT_PATH and method == "POST":
+            new_rest_raw = calibration_rest_raw_from_path(request_path)
+            source_rest_raw = calibration_source_rest_raw_from_path(request_path)
+            if new_rest_raw is None:
+                http_response(
+                    client,
+                    "400 Bad Request",
+                    '{"error":"rest_raw must be 0-4095"}',
+                )
+            else:
+                try:
+                    old_rest_raw, offset = shift_calibration_to_rest(
+                        new_rest_raw, source_rest_raw)
+                    http_response(client, "200 OK", json.dumps({
+                        "ok": True,
+                        "old_rest_raw": old_rest_raw,
+                        "new_rest_raw": new_rest_raw,
+                        "offset_raw": offset,
+                    }))
+                    print(
+                        "Calibration shifted: REST {} -> {} (offset {})".format(
+                            old_rest_raw, new_rest_raw, offset))
+                except Exception as error:
+                    print("CALIBRATION SHIFT ERROR:", error)
+                    http_response(client, "409 Conflict", json.dumps({"error": str(error)}))
         elif path == CALIBRATION_CAPTURE_PATH and method == "POST":
             point = calibration_point_from_path(request_path)
             if point is None:
