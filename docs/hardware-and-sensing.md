@@ -75,14 +75,20 @@ http://<pico-ip>/calibrate
 
 With the mechanism stopped, capture the distinct REST gap first, then capture physical positions 1–20 individually. The Pico takes multiple samples and stores the median raw angle along with the sample spread and magnetic diagnostics in its local `mills_calibration.json` file. REST is stored as `REST`, not as slot 0, and remains distinct from slot 20.
 
-The calibration page's REST override changes only the REST point and leaves slots 1–20 unchanged. This is the safe choice after a physical mount or magnet-geometry change. The Mac-side `override-rest.py` script previews this operation and applies it only with `--apply`:
+The calibration page's REST override rebuilds slots 1–20 from their measured adjacent relationships. This is appropriate when the sensor/magnet assembly was rotated as a rigid unit. The Mac-side `override-rest.py` script previews this operation and applies it only with `--apply`:
 
 ```bash
 ./override-rest.py <new-rest-raw>
 ./override-rest.py <new-rest-raw> --apply
 ```
 
-For a rigid rotation with unchanged centering, tilt, and air gap, the script also supports an explicit `--rebuild-from-relationships` mode. It calculates each saved circular step from REST through slot 20 and rebuilds the table from the Pico's current saved REST value; do not use this mode after changing the physical geometry. Individual row overrides or fresh captures are safer then.
+If the physical geometry changed, use `--rest-only` instead to change only REST, or use individual row overrides/fresh captures:
+
+```bash
+./override-rest.py <new-rest-raw> --rest-only --apply
+```
+
+The script calculates each saved circular step from REST through slot 20 and rebuilds the table from the Pico's current saved REST value; it does not use a hard-coded historical REST value.
 
 Each step uses the signed shortest circular difference in raw counts (`-2048..2047`), and each next point is reconstructed cumulatively with modulo-4096 wrapping. The script verifies that the ordered points close as approximately one complete turn before an apply.
 

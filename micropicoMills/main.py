@@ -49,6 +49,7 @@ OTA_PATH = "/ota"
 CALIBRATION_PATH = "/calibration"
 CALIBRATION_CAPTURE_PATH = "/calibration/capture"
 CALIBRATION_SHIFT_PATH = "/calibration/shift"
+CALIBRATION_REBUILD_PATH = "/calibration/rebuild"
 CALIBRATION_OVERRIDE_PATH = "/calibration/override"
 OTA_TEMP_FILE = "main.new.py"
 OTA_BACKUP_FILE = "main.backup.py"
@@ -318,6 +319,49 @@ def shift_calibration_to_rest(new_rest_raw, source_rest_raw=None):
     calibration_points["REST"]["offset_raw"] = offset
     save_calibration()
     return old_rest_raw, offset
+
+
+def signed_circular_delta(next_raw, previous_raw):
+    delta = (int(next_raw) - int(previous_raw)) % 4096
+    if delta > 2048:
+        delta -= 4096
+    return delta
+
+
+def rebuild_calibration_from_relationships(new_rest_raw):
+    """Rebuild all points from the saved adjacent circular relationships."""
+    ordered = ["REST"] + [str(slot) for slot in range(1, 21)]
+    missing = [point for point in ordered if point not in calibration_points]
+    if missing:
+        raise ValueError("missing calibration points: {}".format(", ".join(missing)))
+
+    old_rest_raw = int(calibration_points["REST"]["raw"])
+    old_previous = old_rest_raw
+    new_previous = new_rest_raw
+    signed_total = 0
+    for point in ordered[1:]:
+        old_raw = int(calibration_points[point]["raw"])
+        step = signed_circular_delta(old_raw, old_previous)
+        signed_total += step
+        new_raw = (new_previous + step) % 4096
+        calibration_points[point]["raw"] = new_raw
+        calibration_points[point]["degrees"] = round(new_raw * 360.0 / 4096.0, 2)
+        calibration_points[point]["relationship_rebuild"] = True
+        old_previous = old_raw
+        new_previous = new_raw
+
+    closing_step = signed_circular_delta(old_rest_raw, old_previous)
+    signed_total += closing_step
+    if abs(abs(signed_total) - 4096) > 64:
+        raise ValueError(
+            "adjacent relationships do not make one turn (total {} raw counts)"
+            .format(signed_total))
+
+    calibration_points["REST"]["raw"] = new_rest_raw
+    calibration_points["REST"]["degrees"] = round(new_rest_raw * 360.0 / 4096.0, 2)
+    calibration_points["REST"]["relationship_rebuild"] = True
+    save_calibration()
+    return old_rest_raw, signed_total
 
 
 def override_calibration_point(point, new_raw):
@@ -788,9 +832,10 @@ def calibration_html():
         "<p id='currentDetails'>Wheel moving: {}; stable: {} ms; magnet: {}; "
         "AGC: {}; magnitude: {}</p>"
         "<button onclick='refreshCurrent()'>Refresh current angle</button>"
-        "<h2>REST override</h2>"
-        "<p>Enter a new settled REST raw angle. This changes REST only and "
-        "leaves slots 1-20 unchanged.</p>"
+        "<h2>REST override and slot rebuild</h2>"
+        "<p>Enter a new settled REST raw angle. Applying it rebuilds slots 1-20 "
+        "from the current table's measured adjacent relationships, preserving "
+        "the uneven spacing.</p>"
         "<label>REST raw: <input id='restRaw' type='number' min='0' max='4095'"
         " step='1' value='{}'></label>"
         " <button onclick='overrideRest()'>Apply REST override</button>"
@@ -852,12 +897,12 @@ def calibration_html():
         " const raw=Number(input.value);"
         " if (!Number.isInteger(raw) || raw < 0 || raw > 4095) {{"
         " message.textContent='ERROR: REST raw must be an integer from 0 to 4095'; return; }}"
-        " if (!confirm('Set REST to raw '+raw+'? Slots 1-20 will remain unchanged.')) return;"
-        " message.textContent='Applying REST override...';"
-        " try {{ const response=await fetch('/calibration/override?point=REST&raw='+raw,{{method:'POST'}});"
+        " if (!confirm('Set REST to raw '+raw+' and rebuild slots 1-20 from their current relationships?')) return;"
+        " message.textContent='Rebuilding calibration table...';"
+        " try {{ const response=await fetch('/calibration/rebuild?rest_raw='+raw,{{method:'POST'}});"
         " const data=await response.json();"
-        " if (!response.ok) throw new Error(data.error || 'REST save failed');"
-        " message.textContent='REST saved at raw '+data.calibration.raw+'; slots unchanged';"
+        " if (!response.ok) throw new Error(data.error || 'calibration rebuild failed');"
+        " message.textContent='REST saved at raw '+data.new_rest_raw+'; slots rebuilt';"
         " setTimeout(()=>location.reload(),700);"
         " }} catch (error) {{ message.textContent='ERROR: '+error; }}"
         "}}"
@@ -921,6 +966,26 @@ def handle_request(client):
                 except Exception as error:
                     print("CALIBRATION OVERRIDE ERROR:", error)
                     http_response(client, "404 Not Found", json.dumps({"error": str(error)}))
+        elif path == CALIBRATION_REBUILD_PATH and method == "POST":
+            new_rest_raw = calibration_rest_raw_from_path(request_path)
+            if new_rest_raw is None:
+                http_response(client, "400 Bad Request", '{"error":"rest_raw must be 0-4095"}')
+            else:
+                try:
+                    old_rest_raw, signed_total = rebuild_calibration_from_relationships(
+                        new_rest_raw)
+                    http_response(client, "200 OK", json.dumps({
+                        "ok": True,
+                        "old_rest_raw": old_rest_raw,
+                        "new_rest_raw": new_rest_raw,
+                        "signed_total_raw": signed_total,
+                    }))
+                    print(
+                        "Calibration rebuilt: REST {} -> {} (total {})".format(
+                            old_rest_raw, new_rest_raw, signed_total))
+                except Exception as error:
+                    print("CALIBRATION REBUILD ERROR:", error)
+                    http_response(client, "409 Conflict", json.dumps({"error": str(error)}))
         elif path == CALIBRATION_SHIFT_PATH and method == "POST":
             new_rest_raw = calibration_rest_raw_from_path(request_path)
             source_rest_raw = calibration_source_rest_raw_from_path(request_path)

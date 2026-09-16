@@ -129,21 +129,21 @@ http://<pico-ip>/calibrate
 
 Capture the current mechanical gap as `REST`, then capture slots 1–20 while each physical selector position is stopped. Each capture samples the AS5600 for about 1.1 seconds and saves the median raw angle, observed sample spread, magnetic status, AGC, and magnitude to the Pico-local `mills_calibration.json` file. `REST` is intentionally separate from slot 20.
 
-The calibration page's REST override changes only the REST point and leaves slots 1–20 unchanged. This is the safe choice when the physical mount or magnet geometry has changed. The Mac-side [`override-rest.py`](override-rest.py) script provides the same behavior with a preview by default:
+The calibration page's REST override rebuilds slots 1–20 from their measured adjacent relationships. This is appropriate when the sensor/magnet assembly was rotated as a rigid unit. The Mac-side [`override-rest.py`](override-rest.py) script provides the same relationship-based rebuild with a preview by default:
 
 ```bash
 ./override-rest.py 295
 ./override-rest.py 295 --apply
 ```
 
-If the sensor/magnet assembly was only rotated as a rigid unit without changing centering, tilt, or air gap, the script can preview a full-table circular rebase. This is deliberately explicit because it is unsafe for a changed geometry:
+If the physical geometry changed, use the explicit REST-only mode instead:
 
 ```bash
-./override-rest.py 295 --rebuild-from-relationships
-./override-rest.py 295 --rebuild-from-relationships --apply
+./override-rest.py 295 --rest-only
+./override-rest.py 295 --rest-only --apply
 ```
 
-The full-table mode calculates its offset from the Pico's current saved REST value; it does not use a hard-coded historical REST value. For changed geometry, override or recapture individual rows instead.
+The full-table mode calculates each relationship from the Pico's current saved table; it does not use a hard-coded historical REST value. For changed geometry, override or recapture individual rows instead. The page and script both require an explicit apply action before modifying calibration.
 
 The relationship rebuild uses the measured circular step from each point to the next, choosing the signed representation in the range `-2048..2047`, then cumulatively wraps each new raw value into `0..4095`. It also checks that the ordered REST-through-20 path closes as approximately one complete turn before allowing an apply.
 

@@ -85,6 +85,9 @@ def main():
         dest="rebuild_from_relationships", action="store_true",
         help="rebuild all rows from saved circular steps between adjacent points")
     parser.add_argument(
+        "--rest-only", action="store_true",
+        help="change only REST and leave slots 1-20 unchanged")
+    parser.add_argument(
         "--apply", action="store_true",
         help="perform the change; without this flag, only show a preview")
     args = parser.parse_args()
@@ -105,8 +108,9 @@ def main():
 
     old_rest = int(points["REST"]["raw"])
     offset = (args.rest_raw - old_rest) % 4096
+    rebuild_mode = args.rebuild_from_relationships or not args.rest_only
 
-    if args.rebuild_from_relationships:
+    if rebuild_mode:
         try:
             proposed = rebuild_from_relationships(points, args.rest_raw)
         except ValueError as error:
@@ -117,7 +121,7 @@ def main():
             proposed,
             "Proposed relationship-based rebuild (REST delta {}):".format(offset))
         print("Adjacent relationships validated as one complete turn.")
-        endpoint = "/calibration/shift?{}".format(urllib.parse.urlencode({
+        endpoint = "/calibration/rebuild?{}".format(urllib.parse.urlencode({
             "rest_raw": args.rest_raw,
         }))
     else:
@@ -144,7 +148,7 @@ def main():
     if int(updated["REST"]["raw"]) != args.rest_raw:
         print("Verification failed: REST value did not persist", file=sys.stderr)
         return 1
-    if args.rebuild_from_relationships:
+    if rebuild_mode:
         for point in sorted_points(proposed):
             if int(updated[point]["raw"]) != int(proposed[point]["raw"]):
                 print(
