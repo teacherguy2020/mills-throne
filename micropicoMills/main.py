@@ -49,6 +49,7 @@ OTA_PATH = "/ota"
 CALIBRATION_PATH = "/calibration"
 CALIBRATION_CAPTURE_PATH = "/calibration/capture"
 CALIBRATION_SHIFT_PATH = "/calibration/shift"
+CALIBRATION_OVERRIDE_PATH = "/calibration/override"
 OTA_TEMP_FILE = "main.new.py"
 OTA_BACKUP_FILE = "main.backup.py"
 OTA_MAX_BYTES = 64 * 1024
@@ -202,6 +203,22 @@ def calibration_source_rest_raw_from_path(request_path):
     return None
 
 
+def calibration_raw_from_path(request_path):
+    if "?" not in request_path:
+        return None
+    query = request_path.split("?", 1)[1]
+    for item in query.split("&"):
+        pair = item.split("=", 1)
+        if len(pair) == 2 and pair[0] == "raw":
+            try:
+                raw = int(pair[1])
+                if 0 <= raw <= 4095:
+                    return raw
+            except ValueError:
+                pass
+    return None
+
+
 def calibration_sort_key(point):
     if point == "REST":
         return (0, 0)
@@ -301,6 +318,17 @@ def shift_calibration_to_rest(new_rest_raw, source_rest_raw=None):
     calibration_points["REST"]["offset_raw"] = offset
     save_calibration()
     return old_rest_raw, offset
+
+
+def override_calibration_point(point, new_raw):
+    if point not in calibration_points:
+        raise ValueError("calibration point not found")
+    value = calibration_points[point]
+    value["raw"] = new_raw
+    value["degrees"] = round(new_raw * 360.0 / 4096.0, 2)
+    value["manual_override"] = True
+    save_calibration()
+    return value
 
 
 def calibrated_position():
@@ -724,7 +752,9 @@ def calibration_html():
         rows += (
             "<tr><td>{}</td><td>{}</td><td>{:.2f}</td><td>{}</td>"
             "<td>{}</td><td>{}</td><td>{}</td>"
-            "<td><button onclick=\"clearPoint('{}')\">Clear</button></td></tr>"
+            "<td><input id='raw-{}' type='number' min='0' max='4095' step='1' value='{}'>"
+            " <button onclick=\"savePoint('{}')\">Save</button>"
+            " <button onclick=\"clearPoint('{}')\">Clear</button></td></tr>"
         ).format(
             point,
             value.get("raw", "?"),
@@ -733,6 +763,9 @@ def calibration_html():
             value.get("magnitude", "?"),
             quality,
             value.get("sample_count", "?"),
+            point,
+            value.get("raw", ""),
+            point,
             point,
         )
     if not rows:
@@ -774,6 +807,20 @@ def calibration_html():
         " const response=await fetch('/calibration/clear?point='+point,{{method:'POST'}});"
         " if (!response.ok) {{ document.getElementById('message').textContent='ERROR: clear failed'; return; }}"
         " location.reload();"
+        "}}"
+        "async function savePoint(point) {{"
+        " const message=document.getElementById('message');"
+        " const input=document.getElementById('raw-'+point);"
+        " const raw=Number(input.value);"
+        " if (!Number.isInteger(raw) || raw < 0 || raw > 4095) {{"
+        " message.textContent='ERROR: raw angle must be an integer from 0 to 4095'; return; }}"
+        " message.textContent='Saving '+point+' at raw '+raw+'...';"
+        " try {{ const response=await fetch('/calibration/override?point='+encodeURIComponent(point)+'&raw='+raw,{{method:'POST'}});"
+        " const data=await response.json();"
+        " if (!response.ok) throw new Error(data.error || 'save failed');"
+        " message.textContent='Saved '+point+' at raw '+data.calibration.raw;"
+        " setTimeout(()=>location.reload(),500);"
+        " }} catch (error) {{ message.textContent='ERROR: '+error; }}"
         "}}"
         "async function overrideRest() {{"
         " const message=document.getElementById('message');"
@@ -817,6 +864,27 @@ def handle_request(client):
             http_response(client, "200 OK", calibration_json())
         elif path == "/calibrate" and method == "GET":
             http_response(client, "200 OK", calibration_html(), "text/html")
+        elif path == CALIBRATION_OVERRIDE_PATH and method == "POST":
+            point = calibration_point_from_path(request_path)
+            new_raw = calibration_raw_from_path(request_path)
+            if point is None or new_raw is None:
+                http_response(
+                    client,
+                    "400 Bad Request",
+                    '{"error":"point must be REST or 1-20 and raw must be 0-4095"}',
+                )
+            else:
+                try:
+                    overridden = override_calibration_point(point, new_raw)
+                    http_response(client, "200 OK", json.dumps({
+                        "ok": True,
+                        "point": point,
+                        "calibration": overridden,
+                    }))
+                    print("Calibration overridden:", point, new_raw)
+                except Exception as error:
+                    print("CALIBRATION OVERRIDE ERROR:", error)
+                    http_response(client, "404 Not Found", json.dumps({"error": str(error)}))
         elif path == CALIBRATION_SHIFT_PATH and method == "POST":
             new_rest_raw = calibration_rest_raw_from_path(request_path)
             source_rest_raw = calibration_source_rest_raw_from_path(request_path)
