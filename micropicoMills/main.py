@@ -728,6 +728,7 @@ def calibration_html():
         )
     if not rows:
         rows = "<tr><td colspan='8'>No calibration points captured.</td></tr>"
+    current_rest_raw = calibration_points.get("REST", {}).get("raw", "")
 
     return (
         "<!doctype html><html><head><meta charset='utf-8'>"
@@ -736,6 +737,12 @@ def calibration_html():
         "<h1>Mills angle calibration</h1>"
         "<p>Hold the mechanism completely still, then capture the current point."
         " REST is separate from slot 20.</p>"
+        "<h2>REST override</h2>"
+        "<p>Enter a new settled REST raw angle to rotate the existing table."
+        " Use this only when the sensor/magnet geometry has not changed.</p>"
+        "<label>REST raw: <input id='restRaw' type='number' min='0' max='4095'"
+        " step='1' value='{}'></label>"
+        " <button onclick='overrideRest()'>Apply REST override</button>"
         "<p>{}</p>"
         "<p id='message'></p>"
         "<table border='1' cellpadding='4'><tr><th>Point</th><th>Raw</th>"
@@ -759,8 +766,23 @@ def calibration_html():
         " if (!response.ok) {{ document.getElementById('message').textContent='ERROR: clear failed'; return; }}"
         " location.reload();"
         "}}"
+        "async function overrideRest() {{"
+        " const message=document.getElementById('message');"
+        " const input=document.getElementById('restRaw');"
+        " const raw=Number(input.value);"
+        " if (!Number.isInteger(raw) || raw < 0 || raw > 4095) {{"
+        " message.textContent='ERROR: REST raw must be an integer from 0 to 4095'; return; }}"
+        " if (!confirm('Rotate the existing calibration table to REST raw '+raw+'?')) return;"
+        " message.textContent='Applying REST override...';"
+        " try {{ const response=await fetch('/calibration/shift?rest_raw='+raw,{{method:'POST'}});"
+        " const data=await response.json();"
+        " if (!response.ok) throw new Error(data.error || 'REST override failed');"
+        " message.textContent='REST updated to raw '+data.new_rest_raw+'; offset '+data.offset_raw;"
+        " setTimeout(()=>location.reload(),700);"
+        " }} catch (error) {{ message.textContent='ERROR: '+error; }}"
+        "}}"
         "</script></body></html>"
-    ).format(buttons, rows)
+    ).format(current_rest_raw, buttons, rows)
 
 
 def handle_request(client):
