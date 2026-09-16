@@ -771,21 +771,9 @@ def calibration_html():
     if not rows:
         rows = "<tr><td colspan='8'>No calibration points captured.</td></tr>"
     current_rest_raw = calibration_points.get("REST", {}).get("raw", "")
-    current_reading = (
-        "<strong>Raw angle:</strong> {} &nbsp; "
-        "<strong>Degrees:</strong> {}&deg;<br>"
-        "Wheel moving: {}; stable: {} ms; "
-        "magnet: {}; AGC: {}; magnitude: {}"
-    ).format(
-        "unknown" if raw_angle is None else raw_angle,
-        "unknown" if angle_degrees is None else "{:.2f}".format(angle_degrees),
-        "YES" if wheel_moving else "NO",
-        "unknown" if stable_since_ms is None else time.ticks_diff(
-            time.ticks_ms(), stable_since_ms),
-        sensor_status_text(),
-        "unknown" if agc_value is None else agc_value,
-        "unknown" if magnitude_value is None else magnitude_value,
-    )
+    current_raw = "unknown" if raw_angle is None else raw_angle
+    current_degrees = (
+        "unknown" if angle_degrees is None else "{:.2f}".format(angle_degrees))
 
     return (
         "<!doctype html><html><head><meta charset='utf-8'>"
@@ -795,8 +783,11 @@ def calibration_html():
         "<p>Hold the mechanism completely still, then capture the current point."
         " REST is separate from slot 20.</p>"
         "<h2>Current AS5600 angle</h2>"
-        "<p id='currentReading'>{}</p>"
-        "<button onclick='location.reload()'>Refresh current reading</button>"
+        "<p><strong>Raw angle:</strong> <span id='currentRaw'>{}</span></p>"
+        "<p><strong>Degrees:</strong> <span id='currentDegrees'>{}&deg;</span></p>"
+        "<p id='currentDetails'>Wheel moving: {}; stable: {} ms; magnet: {}; "
+        "AGC: {}; magnitude: {}</p>"
+        "<button onclick='refreshCurrent()'>Refresh current angle</button>"
         "<h2>REST override</h2>"
         "<p>Enter a new settled REST raw angle to rotate the existing table."
         " Use this only when the sensor/magnet geometry has not changed.</p>"
@@ -810,6 +801,21 @@ def calibration_html():
         "<th>Samples</th><th>Action</th></tr>{}</table>"
         "<p><a href='/'>Back to status</a></p>"
         "<script>"
+        "async function refreshCurrent() {{"
+        " try {{ const response=await fetch('/status?now='+Date.now(),{{cache:'no-store'}});"
+        " const data=await response.json();"
+        " document.getElementById('currentRaw').textContent="
+        " data.raw_angle === null ? 'unknown' : data.raw_angle;"
+        " document.getElementById('currentDegrees').textContent="
+        " data.angle_degrees === null ? 'unknown' : data.angle_degrees+'°';"
+        " document.getElementById('currentDetails').textContent="
+        " 'Wheel moving: '+(data.wheel_moving ? 'YES' : 'NO')+"
+        " '; stable: '+(data.stable_ms === null ? 'unknown' : data.stable_ms)+' ms; magnet: '+"
+        " data.sensor_status+'; AGC: '+(data.agc === null ? 'unknown' : data.agc)+"
+        " '; magnitude: '+(data.magnitude === null ? 'unknown' : data.magnitude);"
+        " }} catch (error) {{ document.getElementById('currentDetails').textContent='Current angle unavailable'; }}"
+        "}}"
+        "refreshCurrent(); setInterval(refreshCurrent,2000);"
         "async function capture(point) {{"
         " const message=document.getElementById('message');"
         " message.textContent='Capturing '+point+'; keep it still...';"
@@ -856,7 +862,19 @@ def calibration_html():
         " }} catch (error) {{ message.textContent='ERROR: '+error; }}"
         "}}"
         "</script></body></html>"
-    ).format(current_rest_raw, current_reading, buttons, rows)
+    ).format(
+        current_raw,
+        current_degrees,
+        "YES" if wheel_moving else "NO",
+        "unknown" if stable_since_ms is None else time.ticks_diff(
+            time.ticks_ms(), stable_since_ms),
+        sensor_status_text(),
+        "unknown" if agc_value is None else agc_value,
+        "unknown" if magnitude_value is None else magnitude_value,
+        current_rest_raw,
+        buttons,
+        rows,
+    )
 
 
 def handle_request(client):
