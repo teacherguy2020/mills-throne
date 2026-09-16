@@ -74,6 +74,16 @@ def print_table(points, title):
         print("  {:>4}: raw {}".format(point, points[point]["raw"]))
 
 
+def close_adjacent_pairs(points, limit=24):
+    ordered = ["REST"] + [str(slot) for slot in range(1, 21)]
+    close = []
+    for previous, point in zip(ordered, ordered[1:] + ["REST"]):
+        distance = abs((int(points[point]["raw"]) - int(points[previous]["raw"]) + 2048) % 4096 - 2048)
+        if distance <= limit:
+            close.append((previous, point, distance))
+    return close
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("rest_raw", type=int, help="new REST raw angle, 0-4095")
@@ -121,6 +131,10 @@ def main():
             proposed,
             "Proposed relationship-based rebuild (REST delta {}):".format(offset))
         print("Adjacent relationships validated as one complete turn.")
+        for previous, point, distance in close_adjacent_pairs(proposed):
+            print(
+                "WARNING: {} and {} are only {} raw counts apart; "
+                "matching may be ambiguous.".format(previous, point, distance))
         endpoint = "/calibration/rebuild?{}".format(urllib.parse.urlencode({
             "rest_raw": args.rest_raw,
         }))
