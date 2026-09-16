@@ -27,8 +27,28 @@ def fetch_calibration(base_url):
     return request_json(base_url + "/calibration")["points"]
 
 
-def shifted(raw, offset):
-    return (int(raw) + offset) % 4096
+def rebuild_from_relationships(points, new_rest_raw):
+    """Rebuild all rows from the saved circular step between each pair."""
+    ordered = ["REST"] + [str(slot) for slot in range(1, 21)]
+    missing = [point for point in ordered if point not in points]
+    if missing:
+        raise ValueError("missing calibration points: {}".format(", ".join(missing)))
+
+    proposed = {"REST": dict(points["REST"], raw=new_rest_raw)}
+    old_previous = int(points["REST"]["raw"])
+    new_previous = new_rest_raw
+    for point in ordered[1:]:
+        old_raw = int(points[point]["raw"])
+        step = (old_raw - old_previous) % 4096
+        new_raw = (new_previous + step) % 4096
+        proposed[point] = dict(
+            points[point],
+            raw=new_raw,
+            degrees=round(new_raw * 360.0 / 4096.0, 2),
+        )
+        old_previous = old_raw
+        new_previous = new_raw
+    return proposed
 
 
 def sorted_points(points):
@@ -48,8 +68,9 @@ def main():
         "--pico-ip", default=os.environ.get("PICO_IP", DEFAULT_PICO_IP),
         help="Pico IP address (default: %(default)s)")
     parser.add_argument(
-        "--rebase-all", action="store_true",
-        help="also shift every saved slot by the current REST delta")
+        "--rebuild-from-relationships", "--rebase-all",
+        dest="rebuild_from_relationships", action="store_true",
+        help="rebuild all rows from saved circular steps between adjacent points")
     parser.add_argument(
         "--apply", action="store_true",
         help="perform the change; without this flag, only show a preview")
@@ -72,14 +93,16 @@ def main():
     old_rest = int(points["REST"]["raw"])
     offset = (args.rest_raw - old_rest) % 4096
 
-    if args.rebase_all:
-        proposed = {
-            point: dict(value, raw=shifted(value["raw"], offset))
-            for point, value in points.items()
-        }
-        proposed["REST"] = dict(proposed["REST"], raw=args.rest_raw)
+    if args.rebuild_from_relationships:
+        try:
+            proposed = rebuild_from_relationships(points, args.rest_raw)
+        except ValueError as error:
+            print("Cannot rebuild table: {}".format(error), file=sys.stderr)
+            return 1
         print_table(points, "Current calibration:")
-        print_table(proposed, "Proposed full-table rebase (offset {}):".format(offset))
+        print_table(
+            proposed,
+            "Proposed relationship-based rebuild (REST delta {}):".format(offset))
         endpoint = "/calibration/shift?{}".format(urllib.parse.urlencode({
             "rest_raw": args.rest_raw,
         }))
@@ -107,6 +130,14 @@ def main():
     if int(updated["REST"]["raw"]) != args.rest_raw:
         print("Verification failed: REST value did not persist", file=sys.stderr)
         return 1
+    if args.rebuild_from_relationships:
+        for point in sorted_points(proposed):
+            if int(updated[point]["raw"]) != int(proposed[point]["raw"]):
+                print(
+                    "Verification failed: {} expected {}, got {}".format(
+                        point, proposed[point]["raw"], updated[point]["raw"]),
+                    file=sys.stderr)
+                return 1
     print("Verified REST raw: {}".format(updated["REST"]["raw"]))
     return 0
 

@@ -82,7 +82,7 @@ The calibration page's REST override changes only the REST point and leaves slot
 ./override-rest.py <new-rest-raw> --apply
 ```
 
-For a rigid rotation with unchanged centering, tilt, and air gap, the script also supports an explicit `--rebase-all` mode. It calculates the offset from the Pico's current saved REST value and shifts every saved slot; do not use this mode after changing the physical geometry. Individual row overrides or fresh captures are safer then.
+For a rigid rotation with unchanged centering, tilt, and air gap, the script also supports an explicit `--rebuild-from-relationships` mode. It calculates each saved circular step from REST through slot 20 and rebuilds the table from the Pico's current saved REST value; do not use this mode after changing the physical geometry. Individual row overrides or fresh captures are safer then.
 
 Calibration may be captured while the sensor reports a weak field for exploratory purposes, but those values are provisional. The current Pico has REST plus all 20 slots stored, with generally 0–2 raw-count inlier spread per capture; the AS5600 still reports `weak=YES` and occasional outliers. Before production use, improve the mount until the field is detected and stable without `weak` or `strong` status, then repeat the affected captures. The Pico now uses saved points for provisional display and settled-slot reporting, and sends the matched slot to Now-Playing for validation against real Mills cycles.
 

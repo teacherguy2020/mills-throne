@@ -139,8 +139,8 @@ The calibration page's REST override changes only the REST point and leaves slot
 If the sensor/magnet assembly was only rotated as a rigid unit without changing centering, tilt, or air gap, the script can preview a full-table circular rebase. This is deliberately explicit because it is unsafe for a changed geometry:
 
 ```bash
-./override-rest.py 295 --rebase-all
-./override-rest.py 295 --rebase-all --apply
+./override-rest.py 295 --rebuild-from-relationships
+./override-rest.py 295 --rebuild-from-relationships --apply
 ```
 
 The full-table mode calculates its offset from the Pico's current saved REST value; it does not use a hard-coded historical REST value. For changed geometry, override or recapture individual rows instead.
