@@ -863,9 +863,34 @@ def calibration_html():
         buttons += " <button onclick=\"capture('{}')\">Capture {}</button>".format(slot, slot)
 
     current_position, current_position_distance, current_position_state = calibrated_position()
-    rows = ""
+    ordered_points = sorted(calibration_points.keys(), key=calibration_sort_key)
+    delta_by_point = {}
     previous_raw = None
-    for point in sorted(calibration_points.keys(), key=calibration_sort_key):
+    previous_real = False
+    measured_deltas = []
+    for point in ordered_points:
+        point_value = calibration_points[point]
+        point_raw = point_value.get("raw")
+        point_real = isinstance(point_raw, int) and not point_value.get("estimated")
+        if previous_real and point_real:
+            delta = signed_circular_delta(point_raw, previous_raw)
+            delta_by_point[point] = delta
+            measured_deltas.append(delta)
+        else:
+            delta_by_point[point] = None
+        if point_real:
+            previous_raw = point_raw
+        previous_real = point_real
+    mean_delta = (
+        sum(measured_deltas) / len(measured_deltas)
+        if measured_deltas else None
+    )
+    mean_text = (
+        "{} raw counts".format(round(mean_delta, 1))
+        if mean_delta is not None else "not enough captured points"
+    )
+    rows = ""
+    for point in ordered_points:
         value = calibration_points[point]
         quality = (
             "estimated" if value.get("estimated")
@@ -879,16 +904,15 @@ def calibration_html():
             and current_position == point
         )
         row_style = " style='background:#c8f7c5;font-weight:bold'" if is_current_slot else ""
-        point_raw = value.get("raw")
-        if previous_raw is None or not isinstance(point_raw, int):
-            delta_text = "-"
-        else:
-            delta_text = "{:+d}".format(signed_circular_delta(point_raw, previous_raw))
-        if isinstance(point_raw, int):
-            previous_raw = point_raw
+        delta = delta_by_point[point]
+        delta_text = "-" if delta is None else "{:+d}".format(delta)
+        deviation_text = (
+            "{:+.1f}".format(delta - mean_delta)
+            if delta is not None and mean_delta is not None else "-"
+        )
         rows += (
             "<tr data-point='{}'{}><td>{}</td><td>{}</td><td>{}</td><td>{:.2f}</td><td>{}</td>"
-            "<td>{}</td><td>{}</td><td>{}</td><td>&plusmn;{} raw</td>"
+            "<td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>&plusmn;{} raw</td>"
             "<td><input id='raw-{}' type='number' min='0' max='4095' step='1' value='{}'>"
             " <button onclick=\"savePoint('{}')\">Save</button>"
             " <button onclick=\"clearPoint('{}')\">Clear</button></td></tr>"
@@ -903,6 +927,7 @@ def calibration_html():
             value.get("magnitude", "?"),
             quality,
             value.get("sample_count", "?"),
+            deviation_text,
             tolerance_raw,
             point,
             value.get("raw", ""),
@@ -910,7 +935,7 @@ def calibration_html():
             point,
         )
     if not rows:
-        rows = "<tr><td colspan='10'>No calibration points captured.</td></tr>"
+        rows = "<tr><td colspan='11'>No calibration points captured.</td></tr>"
     current_rest_raw = calibration_points.get("REST", {}).get("raw", "")
     current_raw = "unknown" if raw_angle is None else raw_angle
     current_degrees = (
@@ -925,6 +950,8 @@ def calibration_html():
         " REST is separate from slot 20.</p>"
         "<p><b>Tolerance:</b> each row accepts up to half the distance to its "
         "nearest calibrated neighbor, capped at &plusmn;45 raw counts.</p>"
+        "<p><b>Mean captured interval:</b> {} raw counts. Deviation is shown "
+        "for each real interval relative to that mean.</p>"
         "<h2>Current AS5600 angle</h2>"
         "<p><strong>Raw angle:</strong> <span id='currentRaw'>{}</span></p>"
         "<p><strong>Degrees:</strong> <span id='currentDegrees'>{}&deg;</span></p>"
@@ -945,7 +972,7 @@ def calibration_html():
         "<p id='message'></p>"
         "<table border='1' cellpadding='4'><tr><th>Point</th><th>Raw</th>"
         "<th>&Delta; Raw from previous</th><th>Degrees</th><th>Spread</th><th>Magnitude</th><th>Quality</th>"
-        "<th>Samples</th><th>Tolerance</th><th>Action</th></tr>{}</table>"
+        "<th>Samples</th><th>Deviation from mean</th><th>Tolerance</th><th>Action</th></tr>{}</table>"
         "<p><a href='/'>Back to status</a></p>"
         "<script>"
         "async function refreshCurrent() {{"
@@ -1017,6 +1044,7 @@ def calibration_html():
         "}}"
         "</script></body></html>"
     ).format(
+        mean_text,
         current_raw,
         current_degrees,
         "YES" if wheel_moving else "NO",
