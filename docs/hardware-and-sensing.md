@@ -78,7 +78,7 @@ With the mechanism stopped, capture the distinct REST gap first, then capture ph
 The calibration page's REST override uses REST and slots 1–5 as the trusted
 anchor. It preserves their measured uneven relationships, carries forward
 measured relationships for later saved slots, and fills any trailing missing
-slots using the average first-five step. Generated rows are marked estimated.
+slots using the average of the most recent measured steps. Generated rows are marked estimated.
 The Mac-side `override-rest.py` script previews this operation and applies it
 only with `--apply`:
 
@@ -96,7 +96,7 @@ If the physical geometry changed, use `--rest-only` instead to change only REST,
 The script calculates the first-five relationships from the Pico's current
 saved table and does not use a hard-coded historical REST value. If all 20
 slots exist, later slots retain their measured relationships. If calibration is
-partial, the first-five average step completes the missing tail.
+partial, the most recent five measured steps complete the missing tail.
 
 Each measured step uses the signed shortest circular difference in raw counts
 (`-2048..2047`), and each point is reconstructed cumulatively with modulo-4096

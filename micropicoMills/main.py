@@ -333,9 +333,9 @@ def signed_circular_delta(next_raw, previous_raw):
 def rebuild_calibration_from_relationships(new_rest_raw):
     """Rebuild saved points from measured adjacent relationships.
 
-    REST and slots 1-5 are the trusted local anchor. Later saved slots are
-    chained from measured relationships until the first missing slot; the
-    average measured first-five step then fills the remaining table.
+    REST and slots 1-5 are the required trusted anchor. Saved real slots are
+    chained from measured relationships until the first missing/estimated
+    slot; the average of the most recent measured steps then fills the tail.
     """
     anchor_points = ["REST"] + [str(slot) for slot in range(1, 6)]
     missing = [point for point in anchor_points if point not in calibration_points]
@@ -344,27 +344,33 @@ def rebuild_calibration_from_relationships(new_rest_raw):
             "REST rebuild requires REST and slots 1-5; missing: {}".format(
                 ", ".join(missing)))
 
-    had_all_slots = all(str(slot) in calibration_points for slot in range(1, 21))
+    had_all_slots = all(
+        str(slot) in calibration_points
+        and not calibration_points[str(slot)].get("estimated")
+        for slot in range(1, 21)
+    )
     ordered = ["REST"] + [str(slot) for slot in range(1, 21)]
 
     old_rest_raw = int(calibration_points["REST"]["raw"])
     old_previous = old_rest_raw
     new_previous = new_rest_raw
     signed_total = 0
-    anchor_steps = []
+    measured_steps = []
     extrapolating = False
     for point in ordered[1:]:
-        if point in calibration_points and not extrapolating:
+        if (point in calibration_points
+                and not calibration_points[point].get("estimated")
+                and not extrapolating):
             old_raw = int(calibration_points[point]["raw"])
             step = signed_circular_delta(old_raw, old_previous)
-            if int(point) <= 5:
-                anchor_steps.append(step)
+            measured_steps.append(step)
             old_previous = old_raw
         else:
-            if not anchor_steps:
-                raise ValueError("cannot calculate first-five average step")
+            if not measured_steps:
+                raise ValueError("cannot calculate extrapolation step")
             extrapolating = True
-            step = round(sum(anchor_steps) / len(anchor_steps))
+            recent_steps = measured_steps[-5:]
+            step = round(sum(recent_steps) / len(recent_steps))
             old_raw = None
         signed_total += step
         new_raw = (new_previous + step) % 4096
@@ -885,8 +891,9 @@ def calibration_html():
         "<h2>REST override and slot rebuild</h2>"
         "<p>Enter a new settled REST raw angle. REST and slots 1-5 provide the "
         "trusted anchor; saved later slots keep their measured relationships. "
-        "If later slots are missing, the average measured first-five step fills "
-        "the table from the first gap. Generated rows are marked estimated.</p>"
+        "If later slots are missing, the average of the most recent measured "
+        "steps fills the table from the first gap. Generated rows are marked "
+        "estimated.</p>"
         "<label>REST raw: <input id='restRaw' type='number' min='0' max='4095'"
         " step='1' value='{}'></label>"
         " <button onclick='overrideRest()'>Apply REST override</button>"
@@ -955,7 +962,7 @@ def calibration_html():
         " const raw=Number(input.value);"
         " if (!Number.isInteger(raw) || raw < 0 || raw > 4095) {{"
         " message.textContent='ERROR: REST raw must be an integer from 0 to 4095'; return; }}"
-        " if (!confirm('Set REST to raw '+raw+' and rebuild the table from the first-five calibration?')) return;"
+        " if (!confirm('Set REST to raw '+raw+' and rebuild the table from measured calibration steps?')) return;"
         " message.textContent='Rebuilding calibration table...';"
         " try {{ const response=await fetch('/calibration/rebuild?rest_raw='+raw,{{method:'POST'}});"
         " const data=await response.json();"

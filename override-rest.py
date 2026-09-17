@@ -3,8 +3,8 @@
 
 The default operation uses REST and slots 1-5 as a trusted local anchor, then
 rebuilds later saved slots from their measured adjacent relationships. If later
-slots are missing, the average measured first-five step fills the table from
-the first gap.
+slots are missing, the average of the most recent measured steps fills the
+table from the first gap.
 """
 
 import argparse
@@ -37,28 +37,33 @@ def rebuild_from_relationships(points, new_rest_raw):
             "REST rebuild requires REST and slots 1-5; missing: {}".format(
                 ", ".join(missing)))
 
-    had_all_slots = all(str(slot) in points for slot in range(1, 21))
+    had_all_slots = all(
+        str(slot) in points and not points[str(slot)].get("estimated")
+        for slot in range(1, 21)
+    )
     ordered = ["REST"] + [str(slot) for slot in range(1, 21)]
     proposed = {"REST": dict(points["REST"], raw=new_rest_raw)}
     old_previous = int(points["REST"]["raw"])
     new_previous = new_rest_raw
     signed_steps = []
-    anchor_steps = []
+    measured_steps = []
     extrapolating = False
     for point in ordered[1:]:
-        if point in points and not extrapolating:
+        if (point in points
+                and not points[point].get("estimated")
+                and not extrapolating):
             old_raw = int(points[point]["raw"])
             step = (old_raw - old_previous) % 4096
             if step > 2048:
                 step -= 4096
-            if int(point) <= 5:
-                anchor_steps.append(step)
+            measured_steps.append(step)
             old_previous = old_raw
         else:
-            if not anchor_steps:
-                raise ValueError("cannot calculate first-five average step")
+            if not measured_steps:
+                raise ValueError("cannot calculate extrapolation step")
             extrapolating = True
-            step = round(sum(anchor_steps) / len(anchor_steps))
+            recent_steps = measured_steps[-5:]
+            step = round(sum(recent_steps) / len(recent_steps))
         signed_steps.append(step)
         new_raw = (new_previous + step) % 4096
         if point in points:
@@ -165,7 +170,7 @@ def main():
         if all(str(slot) in points for slot in range(1, 21)):
             print("Adjacent relationships validated as one complete turn.")
         else:
-            print("Available relationships used; missing slots were filled from the first-five average step.")
+            print("Available relationships used; missing slots were filled from the recent measured-step average.")
         for previous, point, distance in close_adjacent_pairs(proposed):
             print(
                 "WARNING: {} and {} are only {} raw counts apart; "

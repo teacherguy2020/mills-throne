@@ -131,8 +131,8 @@ Capture the current mechanical gap as `REST`, then capture slots 1–20 while ea
 
 The calibration page's REST override uses REST and slots 1–5 as the trusted
 anchor, preserving their measured uneven relationships. Later saved slots keep
-their measured relationships; if later slots are missing, the average measured
-first-five step completes the table and marks those rows estimated. The
+their measured relationships; if later slots are missing, the average of the
+most recent measured steps completes the table and marks those rows estimated. The
 Mac-side [`override-rest.py`](override-rest.py) script provides the same
 relationship-based rebuild with a preview by default:
 
@@ -153,7 +153,7 @@ does not use a hard-coded historical REST value. For changed geometry, override
 or recapture individual rows instead. The page and script both require an
 explicit apply action before modifying calibration.
 
-The relationship rebuild uses the measured circular step from each point to the next, choosing the signed representation in the range `-2048..2047`, then cumulatively wraps each new raw value into `0..4095`. A complete-turn check is applied when all 20 source slots exist.
+The relationship rebuild uses the measured circular step from each point to the next, choosing the signed representation in the range `-2048..2047`, then cumulatively wraps each new raw value into `0..4095`. If the table is partial, the most recent five measured steps provide the extrapolation step. A complete-turn check is applied when all 20 source slots exist.
 
 The current accepted table is recorded in [`docs/reference-calibration.md`](docs/reference-calibration.md). The override preview warns when adjacent positions fall inside the Pico's matching window, such as the current 20-to-REST separation.
 
