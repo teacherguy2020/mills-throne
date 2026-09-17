@@ -864,6 +864,7 @@ def calibration_html():
 
     current_position, current_position_distance, current_position_state = calibrated_position()
     rows = ""
+    previous_raw = None
     for point in sorted(calibration_points.keys(), key=calibration_sort_key):
         value = calibration_points[point]
         quality = (
@@ -878,8 +879,15 @@ def calibration_html():
             and current_position == point
         )
         row_style = " style='background:#c8f7c5;font-weight:bold'" if is_current_slot else ""
+        point_raw = value.get("raw")
+        if previous_raw is None or not isinstance(point_raw, int):
+            delta_text = "-"
+        else:
+            delta_text = "{:+d}".format(signed_circular_delta(point_raw, previous_raw))
+        if isinstance(point_raw, int):
+            previous_raw = point_raw
         rows += (
-            "<tr data-point='{}'{}><td>{}</td><td>{}</td><td>{:.2f}</td><td>{}</td>"
+            "<tr data-point='{}'{}><td>{}</td><td>{}</td><td>{}</td><td>{:.2f}</td><td>{}</td>"
             "<td>{}</td><td>{}</td><td>{}</td><td>&plusmn;{} raw</td>"
             "<td><input id='raw-{}' type='number' min='0' max='4095' step='1' value='{}'>"
             " <button onclick=\"savePoint('{}')\">Save</button>"
@@ -889,6 +897,7 @@ def calibration_html():
             row_style,
             point,
             value.get("raw", "?"),
+            delta_text,
             value.get("degrees", 0.0),
             value.get("spread_raw", "?"),
             value.get("magnitude", "?"),
@@ -901,7 +910,7 @@ def calibration_html():
             point,
         )
     if not rows:
-        rows = "<tr><td colspan='9'>No calibration points captured.</td></tr>"
+        rows = "<tr><td colspan='10'>No calibration points captured.</td></tr>"
     current_rest_raw = calibration_points.get("REST", {}).get("raw", "")
     current_raw = "unknown" if raw_angle is None else raw_angle
     current_degrees = (
@@ -935,7 +944,7 @@ def calibration_html():
         "<p>{}</p>"
         "<p id='message'></p>"
         "<table border='1' cellpadding='4'><tr><th>Point</th><th>Raw</th>"
-        "<th>Degrees</th><th>Spread</th><th>Magnitude</th><th>Quality</th>"
+        "<th>&Delta; Raw from previous</th><th>Degrees</th><th>Spread</th><th>Magnitude</th><th>Quality</th>"
         "<th>Samples</th><th>Tolerance</th><th>Action</th></tr>{}</table>"
         "<p><a href='/'>Back to status</a></p>"
         "<script>"
