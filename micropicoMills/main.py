@@ -886,7 +886,7 @@ def calibration_html():
         if measured_deltas else None
     )
     mean_text = (
-        "{} raw counts".format(round(mean_delta, 1))
+        "{}".format(round(mean_delta, 1))
         if mean_delta is not None else "not enough captured points"
     )
     rows = ""
