@@ -104,6 +104,8 @@ wrapping. A complete-turn check is applied when all 20 source slots exist.
 
 Calibration may be captured while the sensor reports a weak field for exploratory purposes, but those values are provisional. The current Pico has REST plus all 20 slots stored, with generally 0–2 raw-count inlier spread per capture; the AS5600 still reports `weak=YES` and occasional outliers. Before production use, improve the mount until the field is detected and stable without `weak` or `strong` status, then repeat the affected captures. The Pico now uses saved points for provisional display and settled-slot reporting, and sends the matched slot to Now-Playing for validation against real Mills cycles.
 
+Runtime matching uses a per-point tolerance: half the nearest neighboring raw-angle gap, capped at ±45 raw counts. This avoids making a close pair more ambiguous merely because widely separated points can tolerate more variation.
+
 ## Optional tray sensor
 
 The V-156-1C25-style roller-lever SPDT microswitches are dry-contact switches, not relays. A future Pico input may use:

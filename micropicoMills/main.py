@@ -231,6 +231,30 @@ def calibration_sort_key(point):
         return (2, point)
 
 
+def calibration_tolerance_raw(point):
+    """Return a point-specific match tolerance, capped by the global maximum."""
+    try:
+        point_raw = int(calibration_points[point]["raw"])
+    except (KeyError, TypeError, ValueError):
+        return CALIBRATION_MATCH_WINDOW_RAW
+
+    nearest_gap = None
+    for other, value in calibration_points.items():
+        if other == point:
+            continue
+        try:
+            other_raw = int(value["raw"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        gap = circular_distance(point_raw, other_raw)
+        if nearest_gap is None or gap < nearest_gap:
+            nearest_gap = gap
+
+    if nearest_gap is None:
+        return CALIBRATION_MATCH_WINDOW_RAW
+    return min(CALIBRATION_MATCH_WINDOW_RAW, max(1, nearest_gap // 2))
+
+
 def capture_calibration_point(point):
     """Capture a stable sample set for REST or one physical slot."""
     global raw_angle, angle_degrees, sensor_status, agc_value, magnitude_value
@@ -428,6 +452,8 @@ def calibrated_position():
 
     nearest_point = None
     nearest_distance = None
+    matched_point = None
+    matched_distance = None
     for point, value in calibration_points.items():
         try:
             point_raw = int(value["raw"])
@@ -437,12 +463,17 @@ def calibrated_position():
         if nearest_distance is None or distance < nearest_distance:
             nearest_point = point
             nearest_distance = distance
+        tolerance = calibration_tolerance_raw(point)
+        if (distance <= tolerance
+                and (matched_distance is None or distance < matched_distance)):
+            matched_point = point
+            matched_distance = distance
 
     if nearest_point is None:
         return None, None, "unknown"
-    if nearest_distance > CALIBRATION_MATCH_WINDOW_RAW:
+    if matched_point is None:
         return None, nearest_distance, "no match"
-    return nearest_point, nearest_distance, "match"
+    return matched_point, matched_distance, "match"
 
 
 def process_selection():
@@ -839,6 +870,7 @@ def calibration_html():
             "estimated" if value.get("estimated")
             else "weak" if value.get("weak") else "ok"
         )
+        tolerance_raw = calibration_tolerance_raw(point)
         is_current_slot = (
             point != "REST"
             and mills_active
@@ -848,7 +880,7 @@ def calibration_html():
         row_style = " style='background:#c8f7c5;font-weight:bold'" if is_current_slot else ""
         rows += (
             "<tr data-point='{}'{}><td>{}</td><td>{}</td><td>{:.2f}</td><td>{}</td>"
-            "<td>{}</td><td>{}</td><td>{}</td>"
+            "<td>{}</td><td>{}</td><td>{}</td><td>&plusmn;{} raw</td>"
             "<td><input id='raw-{}' type='number' min='0' max='4095' step='1' value='{}'>"
             " <button onclick=\"savePoint('{}')\">Save</button>"
             " <button onclick=\"clearPoint('{}')\">Clear</button></td></tr>"
@@ -862,13 +894,14 @@ def calibration_html():
             value.get("magnitude", "?"),
             quality,
             value.get("sample_count", "?"),
+            tolerance_raw,
             point,
             value.get("raw", ""),
             point,
             point,
         )
     if not rows:
-        rows = "<tr><td colspan='8'>No calibration points captured.</td></tr>"
+        rows = "<tr><td colspan='9'>No calibration points captured.</td></tr>"
     current_rest_raw = calibration_points.get("REST", {}).get("raw", "")
     current_raw = "unknown" if raw_angle is None else raw_angle
     current_degrees = (
@@ -881,6 +914,8 @@ def calibration_html():
         "<h1>Mills angle calibration</h1>"
         "<p>Hold the mechanism completely still, then capture the current point."
         " REST is separate from slot 20.</p>"
+        "<p><b>Tolerance:</b> each row accepts up to half the distance to its "
+        "nearest calibrated neighbor, capped at &plusmn;45 raw counts.</p>"
         "<h2>Current AS5600 angle</h2>"
         "<p><strong>Raw angle:</strong> <span id='currentRaw'>{}</span></p>"
         "<p><strong>Degrees:</strong> <span id='currentDegrees'>{}&deg;</span></p>"
@@ -901,7 +936,7 @@ def calibration_html():
         "<p id='message'></p>"
         "<table border='1' cellpadding='4'><tr><th>Point</th><th>Raw</th>"
         "<th>Degrees</th><th>Spread</th><th>Magnitude</th><th>Quality</th>"
-        "<th>Samples</th><th>Action</th></tr>{}</table>"
+        "<th>Samples</th><th>Tolerance</th><th>Action</th></tr>{}</table>"
         "<p><a href='/'>Back to status</a></p>"
         "<script>"
         "async function refreshCurrent() {{"

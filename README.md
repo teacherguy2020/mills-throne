@@ -155,7 +155,12 @@ explicit apply action before modifying calibration.
 
 The relationship rebuild uses the measured circular step from each point to the next, choosing the signed representation in the range `-2048..2047`, then cumulatively wraps each new raw value into `0..4095`. If the table is partial, the most recent five measured steps provide the extrapolation step. A complete-turn check is applied when all 20 source slots exist.
 
-The current accepted table is recorded in [`docs/reference-calibration.md`](docs/reference-calibration.md). The override preview warns when adjacent positions fall inside the Pico's matching window, such as the current 20-to-REST separation.
+The calibration table displays a per-row tolerance. Each point's runtime match
+window is at most half the raw-angle distance to its nearest neighboring point,
+capped at ±45 raw counts, so close neighboring positions receive narrower
+windows automatically. The override preview warns when adjacent positions fall
+inside the matching limit, such as the current 20-to-REST separation. The
+current accepted table is recorded in [`docs/reference-calibration.md`](docs/reference-calibration.md).
 
 Weak magnet readings are allowed but are recorded as provisional. The current installed calibration contains REST and slots 1–20; individual captures generally have 0–2 raw-count inlier spread, but the AS5600 continues to report `weak=YES` and occasional outliers. Improve the magnet alignment/air gap and repeat calibration before treating the values as production-quality. The Pico uses the saved points for provisional settled-slot reporting, and live testing has confirmed correct slot-to-playlist metadata mapping.
 
