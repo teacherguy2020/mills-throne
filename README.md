@@ -129,7 +129,12 @@ http://<pico-ip>/calibrate
 
 Capture the current mechanical gap as `REST`, then capture slots 1–20 while each physical selector position is stopped. Each capture samples the AS5600 for about 1.1 seconds and saves the median raw angle, observed sample spread, magnetic status, AGC, and magnitude to the Pico-local `mills_calibration.json` file. `REST` is intentionally separate from slot 20.
 
-The calibration page's REST override rebuilds slots 1–20 from their measured adjacent relationships. This is appropriate when the sensor/magnet assembly was rotated as a rigid unit. The Mac-side [`override-rest.py`](override-rest.py) script provides the same relationship-based rebuild with a preview by default:
+The calibration page's REST override uses REST and slots 1–5 as the trusted
+anchor, preserving their measured uneven relationships. Later saved slots keep
+their measured relationships; if later slots are missing, the average measured
+first-five step completes the table and marks those rows estimated. The
+Mac-side [`override-rest.py`](override-rest.py) script provides the same
+relationship-based rebuild with a preview by default:
 
 ```bash
 ./override-rest.py 295
@@ -143,9 +148,12 @@ If the physical geometry changed, use the explicit REST-only mode instead:
 ./override-rest.py 295 --rest-only --apply
 ```
 
-The full-table mode calculates each relationship from the Pico's current saved table; it does not use a hard-coded historical REST value. For changed geometry, override or recapture individual rows instead. The page and script both require an explicit apply action before modifying calibration.
+The rebuild calculates relationships from the Pico's current saved table; it
+does not use a hard-coded historical REST value. For changed geometry, override
+or recapture individual rows instead. The page and script both require an
+explicit apply action before modifying calibration.
 
-The relationship rebuild uses the measured circular step from each point to the next, choosing the signed representation in the range `-2048..2047`, then cumulatively wraps each new raw value into `0..4095`. It also checks that the ordered REST-through-20 path closes as approximately one complete turn before allowing an apply.
+The relationship rebuild uses the measured circular step from each point to the next, choosing the signed representation in the range `-2048..2047`, then cumulatively wraps each new raw value into `0..4095`. A complete-turn check is applied when all 20 source slots exist.
 
 The current accepted table is recorded in [`docs/reference-calibration.md`](docs/reference-calibration.md). The override preview warns when adjacent positions fall inside the Pico's matching window, such as the current 20-to-REST separation.
 

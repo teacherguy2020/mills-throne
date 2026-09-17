@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Safely override the Pico's REST calibration point.
 
-The default operation changes REST only. Use --rebase-all only when the
-sensor/magnet assembly was rotated as a rigid unit and all saved slot angles
-should receive the same circular offset.
+The default operation uses REST and slots 1-5 as a trusted local anchor, then
+rebuilds later saved slots from their measured adjacent relationships. If later
+slots are missing, the average measured first-five step fills the table from
+the first gap.
 """
 
 import argparse
@@ -28,39 +29,67 @@ def fetch_calibration(base_url):
 
 
 def rebuild_from_relationships(points, new_rest_raw):
-    """Rebuild all rows from the saved circular step between each pair."""
-    ordered = ["REST"] + [str(slot) for slot in range(1, 21)]
-    missing = [point for point in ordered if point not in points]
+    """Rebuild the full table from first-five anchors and measured steps."""
+    anchors = ["REST"] + [str(slot) for slot in range(1, 6)]
+    missing = [point for point in anchors if point not in points]
     if missing:
-        raise ValueError("missing calibration points: {}".format(", ".join(missing)))
+        raise ValueError(
+            "REST rebuild requires REST and slots 1-5; missing: {}".format(
+                ", ".join(missing)))
 
+    had_all_slots = all(str(slot) in points for slot in range(1, 21))
+    ordered = ["REST"] + [str(slot) for slot in range(1, 21)]
     proposed = {"REST": dict(points["REST"], raw=new_rest_raw)}
     old_previous = int(points["REST"]["raw"])
     new_previous = new_rest_raw
     signed_steps = []
+    anchor_steps = []
+    extrapolating = False
     for point in ordered[1:]:
-        old_raw = int(points[point]["raw"])
-        step = (old_raw - old_previous) % 4096
-        if step > 2048:
-            step -= 4096
+        if point in points and not extrapolating:
+            old_raw = int(points[point]["raw"])
+            step = (old_raw - old_previous) % 4096
+            if step > 2048:
+                step -= 4096
+            if int(point) <= 5:
+                anchor_steps.append(step)
+            old_previous = old_raw
+        else:
+            if not anchor_steps:
+                raise ValueError("cannot calculate first-five average step")
+            extrapolating = True
+            step = round(sum(anchor_steps) / len(anchor_steps))
         signed_steps.append(step)
         new_raw = (new_previous + step) % 4096
-        proposed[point] = dict(
-            points[point],
-            raw=new_raw,
-            degrees=round(new_raw * 360.0 / 4096.0, 2),
-        )
-        old_previous = old_raw
+        if point in points:
+            proposed[point] = dict(
+                points[point],
+                raw=new_raw,
+                degrees=round(new_raw * 360.0 / 4096.0, 2),
+            )
+            if extrapolating:
+                proposed[point]["estimated"] = True
+        else:
+            proposed[point] = {
+                "raw": new_raw,
+                "degrees": round(new_raw * 360.0 / 4096.0, 2),
+                "relationship_rebuild": True,
+                "estimated": True,
+                "step_raw": step,
+            }
         new_previous = new_raw
-    closing_step = (int(points["REST"]["raw"]) - old_previous) % 4096
-    if closing_step > 2048:
-        closing_step -= 4096
-    signed_steps.append(closing_step)
-    total_turn = sum(signed_steps)
-    if abs(abs(total_turn) - 4096) > 64:
-        raise ValueError(
-            "adjacent relationships do not make one turn (total {} raw counts)"
-            .format(total_turn))
+
+    # A complete-turn check is meaningful only when all 20 source slots exist.
+    if had_all_slots:
+        closing_step = (int(points["REST"]["raw"]) - old_previous) % 4096
+        if closing_step > 2048:
+            closing_step -= 4096
+        signed_steps.append(closing_step)
+        total_turn = sum(signed_steps)
+        if abs(abs(total_turn) - 4096) > 64:
+            raise ValueError(
+                "adjacent relationships do not make one turn (total {} raw counts)"
+                .format(total_turn))
     return proposed
 
 
@@ -74,8 +103,11 @@ def print_table(points, title):
         print("  {:>4}: raw {}".format(point, points[point]["raw"]))
 
 
-def close_adjacent_pairs(points, limit=24):
-    ordered = ["REST"] + [str(slot) for slot in range(1, 21)]
+def close_adjacent_pairs(points, limit=40):
+    ordered = ["REST"] + [
+        str(slot) for slot in range(1, 21)
+        if str(slot) in points
+    ]
     close = []
     for previous, point in zip(ordered, ordered[1:] + ["REST"]):
         distance = abs((int(points[point]["raw"]) - int(points[previous]["raw"]) + 2048) % 4096 - 2048)
@@ -130,7 +162,10 @@ def main():
         print_table(
             proposed,
             "Proposed relationship-based rebuild (REST delta {}):".format(offset))
-        print("Adjacent relationships validated as one complete turn.")
+        if all(str(slot) in points for slot in range(1, 21)):
+            print("Adjacent relationships validated as one complete turn.")
+        else:
+            print("Available relationships used; missing slots were filled from the first-five average step.")
         for previous, point, distance in close_adjacent_pairs(proposed):
             print(
                 "WARNING: {} and {} are only {} raw counts apart; "

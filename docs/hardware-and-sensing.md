@@ -75,7 +75,12 @@ http://<pico-ip>/calibrate
 
 With the mechanism stopped, capture the distinct REST gap first, then capture physical positions 1–20 individually. The Pico takes multiple samples and stores the median raw angle along with the sample spread and magnetic diagnostics in its local `mills_calibration.json` file. REST is stored as `REST`, not as slot 0, and remains distinct from slot 20.
 
-The calibration page's REST override rebuilds slots 1–20 from their measured adjacent relationships. This is appropriate when the sensor/magnet assembly was rotated as a rigid unit. The Mac-side `override-rest.py` script previews this operation and applies it only with `--apply`:
+The calibration page's REST override uses REST and slots 1–5 as the trusted
+anchor. It preserves their measured uneven relationships, carries forward
+measured relationships for later saved slots, and fills any trailing missing
+slots using the average first-five step. Generated rows are marked estimated.
+The Mac-side `override-rest.py` script previews this operation and applies it
+only with `--apply`:
 
 ```bash
 ./override-rest.py <new-rest-raw>
@@ -88,9 +93,14 @@ If the physical geometry changed, use `--rest-only` instead to change only REST,
 ./override-rest.py <new-rest-raw> --rest-only --apply
 ```
 
-The script calculates each saved circular step from REST through slot 20 and rebuilds the table from the Pico's current saved REST value; it does not use a hard-coded historical REST value.
+The script calculates the first-five relationships from the Pico's current
+saved table and does not use a hard-coded historical REST value. If all 20
+slots exist, later slots retain their measured relationships. If calibration is
+partial, the first-five average step completes the missing tail.
 
-Each step uses the signed shortest circular difference in raw counts (`-2048..2047`), and each next point is reconstructed cumulatively with modulo-4096 wrapping. The script verifies that the ordered points close as approximately one complete turn before an apply.
+Each measured step uses the signed shortest circular difference in raw counts
+(`-2048..2047`), and each point is reconstructed cumulatively with modulo-4096
+wrapping. A complete-turn check is applied when all 20 source slots exist.
 
 Calibration may be captured while the sensor reports a weak field for exploratory purposes, but those values are provisional. The current Pico has REST plus all 20 slots stored, with generally 0–2 raw-count inlier spread per capture; the AS5600 still reports `weak=YES` and occasional outliers. Before production use, improve the mount until the field is detected and stable without `weak` or `strong` status, then repeat the affected captures. The Pico now uses saved points for provisional display and settled-slot reporting, and sends the matched slot to Now-Playing for validation against real Mills cycles.
 

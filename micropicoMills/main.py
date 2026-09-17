@@ -73,7 +73,9 @@ CALIBRATION_SAMPLE_INTERVAL_MS = 80
 # Accept occasional AS5600 glitches while requiring a strong steady majority.
 CALIBRATION_INLIER_WINDOW_RAW = 32
 CALIBRATION_MIN_INLIERS = 12
-CALIBRATION_MATCH_WINDOW_RAW = 24
+# Allow additional variation from the intentionally weak-field magnet mount
+# while remaining narrower than the closest known neighboring slot gaps.
+CALIBRATION_MATCH_WINDOW_RAW = 40
 CALIBRATION_DISPLAY_STABLE_MS = 300
 SELECTION_RETRY_MS = 5000
 
@@ -329,33 +331,67 @@ def signed_circular_delta(next_raw, previous_raw):
 
 
 def rebuild_calibration_from_relationships(new_rest_raw):
-    """Rebuild all points from the saved adjacent circular relationships."""
-    ordered = ["REST"] + [str(slot) for slot in range(1, 21)]
-    missing = [point for point in ordered if point not in calibration_points]
+    """Rebuild saved points from measured adjacent relationships.
+
+    REST and slots 1-5 are the trusted local anchor. Later saved slots are
+    chained from measured relationships until the first missing slot; the
+    average measured first-five step then fills the remaining table.
+    """
+    anchor_points = ["REST"] + [str(slot) for slot in range(1, 6)]
+    missing = [point for point in anchor_points if point not in calibration_points]
     if missing:
-        raise ValueError("missing calibration points: {}".format(", ".join(missing)))
+        raise ValueError(
+            "REST rebuild requires REST and slots 1-5; missing: {}".format(
+                ", ".join(missing)))
+
+    had_all_slots = all(str(slot) in calibration_points for slot in range(1, 21))
+    ordered = ["REST"] + [str(slot) for slot in range(1, 21)]
 
     old_rest_raw = int(calibration_points["REST"]["raw"])
     old_previous = old_rest_raw
     new_previous = new_rest_raw
     signed_total = 0
+    anchor_steps = []
+    extrapolating = False
     for point in ordered[1:]:
-        old_raw = int(calibration_points[point]["raw"])
-        step = signed_circular_delta(old_raw, old_previous)
+        if point in calibration_points and not extrapolating:
+            old_raw = int(calibration_points[point]["raw"])
+            step = signed_circular_delta(old_raw, old_previous)
+            if int(point) <= 5:
+                anchor_steps.append(step)
+            old_previous = old_raw
+        else:
+            if not anchor_steps:
+                raise ValueError("cannot calculate first-five average step")
+            extrapolating = True
+            step = round(sum(anchor_steps) / len(anchor_steps))
+            old_raw = None
         signed_total += step
         new_raw = (new_previous + step) % 4096
-        calibration_points[point]["raw"] = new_raw
-        calibration_points[point]["degrees"] = round(new_raw * 360.0 / 4096.0, 2)
-        calibration_points[point]["relationship_rebuild"] = True
-        old_previous = old_raw
+        if point in calibration_points:
+            calibration_points[point]["raw"] = new_raw
+            calibration_points[point]["degrees"] = round(new_raw * 360.0 / 4096.0, 2)
+            calibration_points[point]["relationship_rebuild"] = True
+        else:
+            calibration_points[point] = {
+                "raw": new_raw,
+                "degrees": round(new_raw * 360.0 / 4096.0, 2),
+                "relationship_rebuild": True,
+                "estimated": True,
+                "step_raw": step,
+            }
         new_previous = new_raw
 
-    closing_step = signed_circular_delta(old_rest_raw, old_previous)
-    signed_total += closing_step
-    if abs(abs(signed_total) - 4096) > 64:
-        raise ValueError(
-            "adjacent relationships do not make one turn (total {} raw counts)"
-            .format(signed_total))
+    # A complete-turn check is meaningful only when all 20 slots are present.
+    # During incremental calibration, the first-five anchor may be rebuilt
+    # before later slots have been captured.
+    if had_all_slots:
+        closing_step = signed_circular_delta(old_rest_raw, old_previous)
+        signed_total += closing_step
+        if abs(abs(signed_total) - 4096) > 64:
+            raise ValueError(
+                "adjacent relationships do not make one turn (total {} raw counts)"
+                .format(signed_total))
 
     calibration_points["REST"]["raw"] = new_rest_raw
     calibration_points["REST"]["degrees"] = round(new_rest_raw * 360.0 / 4096.0, 2)
@@ -789,17 +825,30 @@ def calibration_html():
     for slot in range(1, 21):
         buttons += " <button onclick=\"capture('{}')\">Capture {}</button>".format(slot, slot)
 
+    current_position, current_position_distance, current_position_state = calibrated_position()
     rows = ""
     for point in sorted(calibration_points.keys(), key=calibration_sort_key):
         value = calibration_points[point]
-        quality = "weak" if value.get("weak") else "ok"
+        quality = (
+            "estimated" if value.get("estimated")
+            else "weak" if value.get("weak") else "ok"
+        )
+        is_current_slot = (
+            point != "REST"
+            and mills_active
+            and current_position_state == "match"
+            and current_position == point
+        )
+        row_style = " style='background:#c8f7c5;font-weight:bold'" if is_current_slot else ""
         rows += (
-            "<tr><td>{}</td><td>{}</td><td>{:.2f}</td><td>{}</td>"
+            "<tr data-point='{}'{}><td>{}</td><td>{}</td><td>{:.2f}</td><td>{}</td>"
             "<td>{}</td><td>{}</td><td>{}</td>"
             "<td><input id='raw-{}' type='number' min='0' max='4095' step='1' value='{}'>"
             " <button onclick=\"savePoint('{}')\">Save</button>"
             " <button onclick=\"clearPoint('{}')\">Clear</button></td></tr>"
         ).format(
+            point,
+            row_style,
             point,
             value.get("raw", "?"),
             value.get("degrees", 0.0),
@@ -832,10 +881,12 @@ def calibration_html():
         "<p id='currentDetails'>Wheel moving: {}; stable: {} ms; magnet: {}; "
         "AGC: {}; magnitude: {}</p>"
         "<button onclick='refreshCurrent()'>Refresh current angle</button>"
+        "<p><span style='background:#c8f7c5;padding:3px'>Green row = current settled Mills slot</span></p>"
         "<h2>REST override and slot rebuild</h2>"
-        "<p>Enter a new settled REST raw angle. Applying it rebuilds slots 1-20 "
-        "from the current table's measured adjacent relationships, preserving "
-        "the uneven spacing.</p>"
+        "<p>Enter a new settled REST raw angle. REST and slots 1-5 provide the "
+        "trusted anchor; saved later slots keep their measured relationships. "
+        "If later slots are missing, the average measured first-five step fills "
+        "the table from the first gap. Generated rows are marked estimated.</p>"
         "<label>REST raw: <input id='restRaw' type='number' min='0' max='4095'"
         " step='1' value='{}'></label>"
         " <button onclick='overrideRest()'>Apply REST override</button>"
@@ -858,6 +909,13 @@ def calibration_html():
         " '; stable: '+(data.stable_ms === null ? 'unknown' : data.stable_ms)+' ms; magnet: '+"
         " data.sensor_status+'; AGC: '+(data.agc === null ? 'unknown' : data.agc)+"
         " '; magnitude: '+(data.magnitude === null ? 'unknown' : data.magnitude);"
+        " document.querySelectorAll('tr[data-point]').forEach(function(row) {{"
+        " const isCurrent = data.mills_active && data.calibrated_position_state === 'match' &&"
+        " data.calibrated_position !== 'REST' &&"
+        " String(data.calibrated_position) === row.getAttribute('data-point');"
+        " row.style.background = isCurrent ? '#c8f7c5' : '';"
+        " row.style.fontWeight = isCurrent ? 'bold' : '';"
+        " }});"
         " }} catch (error) {{ document.getElementById('currentDetails').textContent='Current angle unavailable'; }}"
         "}}"
         "refreshCurrent(); setInterval(refreshCurrent,2000);"
@@ -897,7 +955,7 @@ def calibration_html():
         " const raw=Number(input.value);"
         " if (!Number.isInteger(raw) || raw < 0 || raw > 4095) {{"
         " message.textContent='ERROR: REST raw must be an integer from 0 to 4095'; return; }}"
-        " if (!confirm('Set REST to raw '+raw+' and rebuild slots 1-20 from their current relationships?')) return;"
+        " if (!confirm('Set REST to raw '+raw+' and rebuild the table from the first-five calibration?')) return;"
         " message.textContent='Rebuilding calibration table...';"
         " try {{ const response=await fetch('/calibration/rebuild?rest_raw='+raw,{{method:'POST'}});"
         " const data=await response.json();"
