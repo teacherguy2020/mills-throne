@@ -108,7 +108,7 @@ def print_table(points, title):
         print("  {:>4}: raw {}".format(point, points[point]["raw"]))
 
 
-def close_adjacent_pairs(points, limit=40):
+def close_adjacent_pairs(points, limit=45):
     ordered = ["REST"] + [
         str(slot) for slot in range(1, 21)
         if str(slot) in points

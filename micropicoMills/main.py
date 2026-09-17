@@ -75,7 +75,7 @@ CALIBRATION_INLIER_WINDOW_RAW = 32
 CALIBRATION_MIN_INLIERS = 12
 # Allow additional variation from the intentionally weak-field magnet mount
 # while remaining narrower than the closest known neighboring slot gaps.
-CALIBRATION_MATCH_WINDOW_RAW = 40
+CALIBRATION_MATCH_WINDOW_RAW = 45
 CALIBRATION_DISPLAY_STABLE_MS = 300
 SELECTION_RETRY_MS = 5000
 
