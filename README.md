@@ -115,7 +115,7 @@ Shelly activity webhooks, AS5600 bench testing, integrated Pico diagnostics, aut
 
 ## Pico software and OTA updates
 
-The Pico program is in [`micropicoMills/main.py`](micropicoMills/main.py). The current program includes the Shelly activity webhooks, AS5600 diagnostic sampling, manual calibration capture, and provisional settled-slot reporting.
+The Pico program is in [`micropicoMills/main.py`](micropicoMills/main.py). The current program includes the Shelly activity webhooks, AS5600 diagnostic sampling, manual calibration capture, editable Mills record metadata, and provisional settled-slot reporting.
 
 The Pico status page provides a calibrated-position hint. Once the wheel is settled, it compares the current angle with the saved points and shows `REST`, `slot N`, or `no calibrated match`. During an active Mills session, a newly settled slot 1–20 is also sent to Now-Playing as `POST /integrations/mills/selection`; this remains provisional while the weak-field sensor mounting is being evaluated.
 
@@ -161,6 +161,12 @@ capped at ±45 raw counts, so close neighboring positions receive narrower
 windows automatically. The override preview warns when adjacent positions fall
 inside the matching limit, such as the current 20-to-REST separation. The
 current accepted table is recorded in [`docs/reference-calibration.md`](docs/reference-calibration.md).
+
+The calibration page also includes editable title/artist fields for each
+physical Mills slot. These values are stored separately in the Pico-local
+`mills_records.json` file, so angle recalibration and REST overrides do not
+change the record catalog. The initial values reflect the current physical
+records and can be corrected directly on the page.
 
 Weak magnet readings are allowed but are recorded as provisional. The current installed calibration contains REST and slots 1–20; individual captures generally have 0–2 raw-count inlier spread, but the AS5600 continues to report `weak=YES` and occasional outliers. Improve the magnet alignment/air gap and repeat calibration before treating the values as production-quality. The Pico uses the saved points for provisional settled-slot reporting, and live testing has confirmed correct slot-to-playlist metadata mapping.
 

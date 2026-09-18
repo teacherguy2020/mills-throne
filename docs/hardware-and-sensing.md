@@ -106,6 +106,11 @@ Calibration may be captured while the sensor reports a weak field for explorator
 
 Runtime matching uses a per-point tolerance: half the nearest neighboring raw-angle gap, capped at ±45 raw counts. This avoids making a close pair more ambiguous merely because widely separated points can tolerate more variation.
 
+The same calibration page provides editable title/artist metadata for slots
+1–20. Record metadata is persisted separately from `mills_calibration.json` in
+`mills_records.json`, so changing a record description does not affect sensor
+calibration.
+
 ## Optional tray sensor
 
 The V-156-1C25-style roller-lever SPDT microswitches are dry-contact switches, not relays. A future Pico input may use:

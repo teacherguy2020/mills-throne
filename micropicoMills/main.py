@@ -51,6 +51,7 @@ CALIBRATION_CAPTURE_PATH = "/calibration/capture"
 CALIBRATION_SHIFT_PATH = "/calibration/shift"
 CALIBRATION_REBUILD_PATH = "/calibration/rebuild"
 CALIBRATION_OVERRIDE_PATH = "/calibration/override"
+CALIBRATION_RECORD_PATH = "/calibration/record"
 OTA_TEMP_FILE = "main.new.py"
 OTA_BACKUP_FILE = "main.backup.py"
 OTA_MAX_BYTES = 64 * 1024
@@ -68,6 +69,8 @@ MOVEMENT_HOLD_MS = 250
 IDLE_CONFIRM_MS = 5000
 CALIBRATION_FILE = "mills_calibration.json"
 CALIBRATION_TEMP_FILE = "mills_calibration.new.json"
+RECORDS_FILE = "mills_records.json"
+RECORDS_TEMP_FILE = "mills_records.new.json"
 CALIBRATION_SAMPLE_COUNT = 15
 CALIBRATION_SAMPLE_INTERVAL_MS = 80
 # Accept occasional AS5600 glitches while requiring a strong steady majority.
@@ -107,6 +110,30 @@ last_selection_slot = None
 last_selection_error = None
 last_selection_attempt_ms = None
 
+DEFAULT_RECORD_METADATA = {
+    "1": {"title": "Thumbalina", "artist": "Danny Kaye"},
+    "2": {"title": "It happens to be me", "artist": "Nat"},
+    "3": {"title": "Found a New Baby", "artist": "Benny"},
+    "4": {"title": "Linger Awhile", "artist": "Sarah"},
+    "5": {"title": "When your lover has gone", "artist": "Frank"},
+    "6": {"title": "It's a good day", "artist": "Peggy"},
+    "7": {"title": "Too-Ra-Loo-Ra-Loo-Ral", "artist": "Bing"},
+    "8": {"title": "American Beauty Rose", "artist": "Frank"},
+    "9": {"title": "Begin the Beguine", "artist": "Frank"},
+    "10": {"title": "East of the Sun", "artist": "Frank"},
+    "11": {"title": "I'll be home for ...", "artist": "Bing"},
+    "12": {"title": "Petootie Pie", "artist": "Ella"},
+    "13": {"title": "Santa Claus is...", "artist": "Bing w/ Andrews"},
+    "14": {"title": "My cousin Louella", "artist": "Frank"},
+    "15": {"title": "A touch of the blues", "artist": "Rosemary"},
+    "16": {"title": "Sleepless", "artist": "Tony"},
+    "17": {"title": "Day by Day", "artist": "Frank"},
+    "18": {"title": "I'm so lonely i could cray", "artist": "Dinah"},
+    "19": {"title": "Ramona", "artist": "Louie Armstrong"},
+    "20": {"title": "Jeep's Blues", "artist": "Duke Ellington"},
+}
+record_metadata = {}
+
 i2c = I2C(0, sda=Pin(4), scl=Pin(5), freq=100000)
 
 
@@ -132,6 +159,58 @@ def save_calibration():
         calibration_file.flush()
     safe_remove(CALIBRATION_FILE)
     os.rename(CALIBRATION_TEMP_FILE, CALIBRATION_FILE)
+
+
+def load_record_metadata():
+    global record_metadata
+    record_metadata = {}
+    for slot in range(1, 21):
+        key = str(slot)
+        record_metadata[key] = {
+            "title": DEFAULT_RECORD_METADATA[key]["title"],
+            "artist": DEFAULT_RECORD_METADATA[key]["artist"],
+        }
+    try:
+        with open(RECORDS_FILE, "r") as records_file:
+            loaded = json.load(records_file)
+        if isinstance(loaded, dict):
+            for slot in range(1, 21):
+                key = str(slot)
+                value = loaded.get(key)
+                if not isinstance(value, dict):
+                    continue
+                title = value.get("title", record_metadata[key]["title"])
+                artist = value.get("artist", record_metadata[key]["artist"])
+                if isinstance(title, str) and isinstance(artist, str):
+                    record_metadata[key] = {
+                        "title": title[:120],
+                        "artist": artist[:80],
+                    }
+        print("Loaded Mills record metadata")
+    except (OSError, ValueError, TypeError) as error:
+        if not isinstance(error, OSError):
+            print("Ignoring invalid record metadata file:", error)
+
+
+def save_record_metadata():
+    safe_remove(RECORDS_TEMP_FILE)
+    with open(RECORDS_TEMP_FILE, "w") as records_file:
+        json.dump(record_metadata, records_file)
+        records_file.flush()
+    safe_remove(RECORDS_FILE)
+    os.rename(RECORDS_TEMP_FILE, RECORDS_FILE)
+
+
+def save_record_metadata_slot(slot, title, artist):
+    key = str(slot)
+    if key not in record_metadata:
+        raise ValueError("slot must be from 1 through 20")
+    record_metadata[key] = {
+        "title": str(title or "").strip()[:120],
+        "artist": str(artist or "").strip()[:80],
+    }
+    save_record_metadata()
+    return record_metadata[key]
 
 
 def sensor_flags(status):
@@ -220,6 +299,56 @@ def calibration_raw_from_path(request_path):
             except ValueError:
                 pass
     return None
+
+
+def url_decode(value):
+    result = ""
+    index = 0
+    while index < len(value):
+        char = value[index]
+        if char == "+":
+            result += " "
+        elif char == "%" and index + 2 < len(value):
+            try:
+                result += chr(int(value[index + 1:index + 3], 16))
+                index += 2
+            except ValueError:
+                result += char
+        else:
+            result += char
+        index += 1
+    return result
+
+
+def query_value_from_path(request_path, name):
+    if "?" not in request_path:
+        return None
+    query = request_path.split("?", 1)[1]
+    for item in query.split("&"):
+        pair = item.split("=", 1)
+        if len(pair) == 2 and pair[0] == name:
+            return url_decode(pair[1])
+    return None
+
+
+def record_slot_from_path(request_path):
+    value = query_value_from_path(request_path, "slot")
+    try:
+        slot = int(value)
+        if 1 <= slot <= 20:
+            return slot
+    except (TypeError, ValueError):
+        pass
+    return None
+
+
+def html_escape(value):
+    return (str(value or "")
+            .replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+            .replace('"', "&quot;")
+            .replace("'", "&#39;"))
 
 
 def calibration_sort_key(point):
@@ -854,7 +983,7 @@ def status_html():
 
 
 def calibration_json():
-    return json.dumps({"points": calibration_points})
+    return json.dumps({"points": calibration_points, "records": record_metadata})
 
 
 def calibration_html():
@@ -910,8 +1039,23 @@ def calibration_html():
             "{:+.1f}".format(delta - mean_delta)
             if delta is not None and mean_delta is not None else "-"
         )
+        if point == "REST":
+            record_cell = "<em>REST position</em>"
+        else:
+            record = record_metadata.get(point, {"title": "", "artist": ""})
+            record_cell = (
+                "<input id='title-{}' type='text' size='18' value='{}'>"
+                "<br><input id='artist-{}' type='text' size='18' value='{}'>"
+                "<br><button onclick=\"saveRecord('{}')\">Save record</button>"
+            ).format(
+                point,
+                html_escape(record.get("title", "")),
+                point,
+                html_escape(record.get("artist", "")),
+                point,
+            )
         rows += (
-            "<tr data-point='{}'{}><td>{}</td><td>{}</td><td>{}</td><td>{:.2f}</td><td>{}</td>"
+            "<tr data-point='{}'{}><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{:.2f}</td><td>{}</td>"
             "<td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>&plusmn;{} raw</td>"
             "<td><input id='raw-{}' type='number' min='0' max='4095' step='1' value='{}'>"
             " <button onclick=\"savePoint('{}')\">Save</button>"
@@ -920,6 +1064,7 @@ def calibration_html():
             point,
             row_style,
             point,
+            record_cell,
             value.get("raw", "?"),
             delta_text,
             value.get("degrees", 0.0),
@@ -935,7 +1080,7 @@ def calibration_html():
             point,
         )
     if not rows:
-        rows = "<tr><td colspan='11'>No calibration points captured.</td></tr>"
+        rows = "<tr><td colspan='12'>No calibration points captured.</td></tr>"
     current_rest_raw = calibration_points.get("REST", {}).get("raw", "")
     current_raw = "unknown" if raw_angle is None else raw_angle
     current_degrees = (
@@ -970,7 +1115,7 @@ def calibration_html():
         " <button onclick='overrideRest()'>Apply REST override</button>"
         "<p>{}</p>"
         "<p id='message'></p>"
-        "<table border='1' cellpadding='4'><tr><th>Point</th><th>Raw</th>"
+        "<table border='1' cellpadding='4'><tr><th>Point</th><th>Record title / artist</th><th>Raw</th>"
         "<th>&Delta; Raw from previous</th><th>Degrees</th><th>Spread</th><th>Magnitude</th><th>Quality</th>"
         "<th>Samples</th><th>Deviation from mean</th><th>Tolerance</th><th>Action</th></tr>{}</table>"
         "<p><a href='/'>Back to status</a></p>"
@@ -1025,6 +1170,18 @@ def calibration_html():
         " if (!response.ok) throw new Error(data.error || 'save failed');"
         " message.textContent='Saved '+point+' at raw '+data.calibration.raw;"
         " setTimeout(()=>location.reload(),500);"
+        " }} catch (error) {{ message.textContent='ERROR: '+error; }}"
+        "}}"
+        "async function saveRecord(slot) {{"
+        " const message=document.getElementById('message');"
+        " const title=document.getElementById('title-'+slot).value;"
+        " const artist=document.getElementById('artist-'+slot).value;"
+        " message.textContent='Saving record '+slot+'...';"
+        " try {{ const query='slot='+encodeURIComponent(slot)+'&title='+encodeURIComponent(title)+'&artist='+encodeURIComponent(artist);"
+        " const response=await fetch('/calibration/record?'+query,{{method:'POST'}});"
+        " const data=await response.json();"
+        " if (!response.ok) throw new Error(data.error || 'record save failed');"
+        " message.textContent='Saved record '+slot;"
         " }} catch (error) {{ message.textContent='ERROR: '+error; }}"
         "}}"
         "async function overrideRest() {{"
@@ -1175,6 +1332,28 @@ def handle_request(client):
                 http_response(client, "200 OK", json.dumps({"ok": True, "point": point}))
             else:
                 http_response(client, "404 Not Found", '{"error":"calibration point not found"}')
+        elif path == CALIBRATION_RECORD_PATH and method == "POST":
+            slot = record_slot_from_path(request_path)
+            title = query_value_from_path(request_path, "title")
+            artist = query_value_from_path(request_path, "artist")
+            if slot is None or title is None or artist is None:
+                http_response(
+                    client,
+                    "400 Bad Request",
+                    '{"error":"slot, title, and artist are required; slot must be 1-20"}',
+                )
+            else:
+                try:
+                    saved = save_record_metadata_slot(slot, title, artist)
+                    http_response(client, "200 OK", json.dumps({
+                        "ok": True,
+                        "slot": slot,
+                        "record": saved,
+                    }))
+                    print("Record metadata saved:", slot)
+                except Exception as error:
+                    print("RECORD METADATA ERROR:", error)
+                    http_response(client, "400 Bad Request", json.dumps({"error": str(error)}))
         elif path == STACK_MOVING_PATH and method in ("GET", "POST"):
             # Shelly may repeat a power condition while it remains true.
             # Treat only the inactive -> active transition as a new event,
@@ -1296,6 +1475,7 @@ def start_server():
 
 print("\nMills Pico preliminary webhook receiver")
 load_calibration()
+load_record_metadata()
 wifi = connect_wifi()
 server = None
 if wifi.isconnected():
