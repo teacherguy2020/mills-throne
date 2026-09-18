@@ -106,6 +106,11 @@ Calibration may be captured while the sensor reports a weak field for explorator
 
 Runtime matching uses a per-point tolerance: half the nearest neighboring raw-angle gap, capped at ±45 raw counts. This avoids making a close pair more ambiguous merely because widely separated points can tolerate more variation.
 
+Slot 20 is additionally deferred for 5 seconds when it is detected during an
+active session. Shelly low-power confirmation during that interval discards
+the ambiguous angle as the return-to-REST pass; sustained active power allows
+it to be reported as a real slot-20 selection.
+
 The same calibration page provides editable title/artist metadata for slots
 1–20. Record metadata is persisted separately from `mills_calibration.json` in
 `mills_records.json`, so changing a record description does not affect sensor

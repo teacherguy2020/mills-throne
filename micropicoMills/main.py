@@ -81,6 +81,10 @@ CALIBRATION_MIN_INLIERS = 12
 CALIBRATION_MATCH_WINDOW_RAW = 45
 CALIBRATION_DISPLAY_STABLE_MS = 300
 SELECTION_RETRY_MS = 5000
+# REST and physical slot 20 are currently only a few raw counts apart. Hold a
+# settled slot-20 candidate long enough for Shelly idle to identify a return
+# home; if power remains active, treat it as a real slot-20 selection.
+SLOT20_CONFIRM_MS = 5000
 
 wifi = None
 mills_active = False
@@ -109,6 +113,7 @@ selection_armed = False
 last_selection_slot = None
 last_selection_error = None
 last_selection_attempt_ms = None
+pending_slot20_since_ms = None
 
 DEFAULT_RECORD_METADATA = {
     "1": {"title": "Thumbalina", "artist": "Danny Kaye"},
@@ -608,7 +613,7 @@ def calibrated_position():
 def process_selection():
     """Report one newly settled physical slot after movement."""
     global selection_armed, last_selection_slot, last_selection_error
-    global last_selection_attempt_ms
+    global last_selection_attempt_ms, pending_slot20_since_ms
 
     if not mills_active or not selection_armed:
         return
@@ -618,10 +623,25 @@ def process_selection():
         return
     position, _, position_state = calibrated_position()
     if position_state != "match" or position == "REST":
+        if pending_slot20_since_ms is not None:
+            pending_slot20_since_ms = None
+            print("Mills slot 20 candidate cleared: wheel moved away")
         return
 
     try:
         slot = int(position)
+        if slot == 20:
+            if pending_idle_since_ms is not None:
+                pending_slot20_since_ms = None
+                print("Mills slot 20 candidate discarded: Shelly idle pending")
+                return
+            if pending_slot20_since_ms is None:
+                pending_slot20_since_ms = now
+                print("Mills slot 20 candidate pending Shelly confirmation")
+                return
+            if time.ticks_diff(now, pending_slot20_since_ms) < SLOT20_CONFIRM_MS:
+                return
+            pending_slot20_since_ms = None
         last_selection_attempt_ms = now
         notify_now_playing("/integrations/mills/selection", {"slot": slot})
         last_selection_slot = slot
@@ -888,6 +908,7 @@ def status_json():
         '"sensor_status":"{}","agc":{},"magnitude":{},'
         '"ota_status":"{}","last_now_playing_event":{},'
         '"idle_pending_ms":{},"calibration_points":{},'
+        '"pending_slot20_ms":{},'
         '"calibrated_position":{},"calibrated_distance_raw":{},'
         '"calibrated_position_state":"{}","selection_armed":{},'
         '"last_selection_slot":{},"last_selection_error":{}}}'
@@ -909,6 +930,7 @@ def status_json():
         "null" if last_now_playing_event is None else '"{}"'.format(last_now_playing_event),
         "null" if pending_idle_since_ms is None else time.ticks_diff(time.ticks_ms(), pending_idle_since_ms),
         len(calibration_points),
+        "null" if pending_slot20_since_ms is None else time.ticks_diff(time.ticks_ms(), pending_slot20_since_ms),
         "null" if position is None else '"{}"'.format(position),
         "null" if position_distance is None else position_distance,
         position_state,
@@ -952,6 +974,7 @@ def status_html():
         "<p><b>Magnitude:</b> {}</p>"
         "<p><b>Angle stable for:</b> {} ms</p>"
         "<p><b>Idle confirmation:</b> {} </p>"
+        "<p><b>Slot 20 confirmation:</b> {} </p>"
         "<p><b>Calibrated points:</b> {}</p>"
         "<p><b>Current calibrated position:</b> {}</p>"
         "<p><b>Selection reporting armed:</b> {}</p>"
@@ -974,6 +997,8 @@ def status_html():
         "unknown" if magnitude_value is None else magnitude_value,
         "unknown" if stable_since_ms is None else time.ticks_diff(time.ticks_ms(), stable_since_ms),
         "pending" if pending_idle_since_ms is not None else "not pending",
+        "pending for {} ms".format(time.ticks_diff(time.ticks_ms(), pending_slot20_since_ms))
+        if pending_slot20_since_ms is not None else "not pending",
         calibrated,
         current_position,
         "YES" if selection_armed else "NO",
@@ -1222,7 +1247,7 @@ def handle_request(client):
     global last_event_method, last_event_path, last_event_error
     global ota_reboot_pending, last_ota_status, last_now_playing_event
     global pending_idle_since_ms, selection_armed, last_selection_slot
-    global last_selection_error, last_selection_attempt_ms
+    global last_selection_error, last_selection_attempt_ms, pending_slot20_since_ms
 
     try:
         method, request_path, headers, initial_body, content_length = read_request(client)
@@ -1375,6 +1400,7 @@ def handle_request(client):
                     last_selection_slot = None
                     last_selection_error = None
                     last_selection_attempt_ms = None
+                    pending_slot20_since_ms = None
                     last_stack_event_ms = time.ticks_ms()
                     stack_event_count += 1
                     last_now_playing_event = "start"
@@ -1432,7 +1458,7 @@ def process_pending_idle():
     """End the session only after low-power state remains long enough."""
     global mills_active, pending_idle_since_ms, wheel_moved_while_active
     global selection_armed
-    global last_event_error, last_now_playing_event
+    global last_event_error, last_now_playing_event, pending_slot20_since_ms
 
     if not mills_active or pending_idle_since_ms is None:
         return
@@ -1443,6 +1469,7 @@ def process_pending_idle():
         notify_now_playing("/integrations/mills/stop")
         mills_active = False
         pending_idle_since_ms = None
+        pending_slot20_since_ms = None
         wheel_moved_while_active = False
         selection_armed = False
         last_now_playing_event = "stop"
