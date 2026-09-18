@@ -119,6 +119,12 @@ The Pico program is in [`micropicoMills/main.py`](micropicoMills/main.py). The c
 
 The Pico status page provides a calibrated-position hint. Once the wheel is settled, it compares the current angle with the saved points and shows `REST`, `slot N`, or `no calibrated match`. During an active Mills session, a newly settled slot 1–20 is also sent to Now-Playing as `POST /integrations/mills/selection`; this remains provisional while the weak-field sensor mounting is being evaluated.
 
+The Pico also mirrors its confirmed Mills active/rest transitions to the
+Homebridge virtual control `mills-active` at `10.0.0.5:8787`. Homebridge
+updates are throttled and retried without affecting sensor sampling or
+Now-Playing. Slot positions, including the ambiguous slot-20 neighborhood,
+do not directly change the Homebridge state.
+
 Because physical slot 20 is very close to the REST gap, a settled slot-20
 candidate is held for 5 seconds before reporting. If Shelly reports low power
 during that window, the candidate is discarded as the return-to-home pass and

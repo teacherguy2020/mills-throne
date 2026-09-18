@@ -1,15 +1,3 @@
-"""Preliminary Mills activity webhook receiver for Pico 2 W.
-
-The Shelly reports that the Mills record stack is moving by calling:
-
-    GET or POST /integrations/mills/stack-moving
-
-This version records the event, notifies Now-Playing on active/idle
-transitions, samples the AS5600 for diagnostic use, provides a manual
-calibration capture page, and reports settled calibrated selections.
-Copy secrets.example.py to secrets.py and fill in the Wi-Fi settings.
-"""
-
 import gc
 import machine
 import os
@@ -63,9 +51,6 @@ MAGNITUDE_REGISTER = 0x1B
 AS5600_SAMPLE_MS = 100
 MOVEMENT_THRESHOLD_RAW = 2
 MOVEMENT_HOLD_MS = 250
-# Shelly reports a threshold crossing, so do not end a Mills session on
-# one brief low-power sample. This is provisional until AS5600 REST sensing
-# becomes the authoritative end-of-session signal.
 IDLE_CONFIRM_MS = 5000
 CALIBRATION_FILE = "mills_calibration.json"
 CALIBRATION_TEMP_FILE = "mills_calibration.new.json"
@@ -73,17 +58,17 @@ RECORDS_FILE = "mills_records.json"
 RECORDS_TEMP_FILE = "mills_records.new.json"
 CALIBRATION_SAMPLE_COUNT = 15
 CALIBRATION_SAMPLE_INTERVAL_MS = 80
-# Accept occasional AS5600 glitches while requiring a strong steady majority.
 CALIBRATION_INLIER_WINDOW_RAW = 32
 CALIBRATION_MIN_INLIERS = 12
-# Allow additional variation from the intentionally weak-field magnet mount
-# while remaining narrower than the closest known neighboring slot gaps.
 CALIBRATION_MATCH_WINDOW_RAW = 45
 CALIBRATION_DISPLAY_STABLE_MS = 300
 SELECTION_RETRY_MS = 5000
-# REST and physical slot 20 are currently only a few raw counts apart. Hold a
-# settled slot-20 candidate long enough for Shelly idle to identify a return
-# home; if power remains active, treat it as a real slot-20 selection.
+HOME_BRIDGE_ENABLED = True
+HOME_BRIDGE_HOST = "10.0.0.5"
+HOME_BRIDGE_PORT = 8787
+HOME_BRIDGE_CONTROL_ID = "mills-active"
+HOME_BRIDGE_TIMEOUT_S = 1
+HOME_BRIDGE_RETRY_MS = 30000
 SLOT20_CONFIRM_MS = 5000
 
 wifi = None
@@ -114,6 +99,12 @@ last_selection_slot = None
 last_selection_error = None
 last_selection_attempt_ms = None
 pending_slot20_since_ms = None
+homebridge_state = None
+homebridge_pending_state = None
+homebridge_last_error = None
+homebridge_last_sync_ms = None
+homebridge_last_attempt_ms = None
+homebridge_startup_sync_pending = True
 
 DEFAULT_RECORD_METADATA = {
     "1": {"title": "Thumbalina", "artist": "Danny Kaye"},
@@ -157,7 +148,6 @@ def load_calibration():
 
 
 def save_calibration():
-    """Write a complete calibration file before replacing the old one."""
     safe_remove(CALIBRATION_TEMP_FILE)
     with open(CALIBRATION_TEMP_FILE, "w") as calibration_file:
         json.dump(calibration_points, calibration_file)
@@ -366,7 +356,6 @@ def calibration_sort_key(point):
 
 
 def calibration_tolerance_raw(point):
-    """Return a point-specific match tolerance, capped by the global maximum."""
     try:
         point_raw = int(calibration_points[point]["raw"])
     except (KeyError, TypeError, ValueError):
@@ -390,7 +379,6 @@ def calibration_tolerance_raw(point):
 
 
 def capture_calibration_point(point):
-    """Capture a stable sample set for REST or one physical slot."""
     global raw_angle, angle_degrees, sensor_status, agc_value, magnitude_value
 
     if AS5600_ADDRESS not in i2c.scan():
@@ -420,7 +408,6 @@ def capture_calibration_point(point):
             "angle unstable; only {}/{} samples agreed (full spread {} raw counts)".format(
                 len(inliers), len(samples), max(samples) - min(samples)))
 
-    # Measure the spread of agreeing samples, accounting for 4095 -> 0.
     inlier_ordered = sorted(inliers)
     gaps = [
         inlier_ordered[index + 1] - inlier_ordered[index]
@@ -456,7 +443,6 @@ def capture_calibration_point(point):
 
 
 def shift_calibration_to_rest(new_rest_raw, source_rest_raw=None):
-    """Rotate the table from a known REST point to new_rest_raw."""
     if "REST" not in calibration_points:
         raise ValueError("REST calibration point is missing")
     if source_rest_raw is None:
@@ -489,12 +475,6 @@ def signed_circular_delta(next_raw, previous_raw):
 
 
 def rebuild_calibration_from_relationships(new_rest_raw):
-    """Rebuild saved points from measured adjacent relationships.
-
-    REST and slots 1-5 are the required trusted anchor. Saved real slots are
-    chained from measured relationships until the first missing/estimated
-    slot; the average of the most recent measured steps then fills the tail.
-    """
     anchor_points = ["REST"] + [str(slot) for slot in range(1, 6)]
     missing = [point for point in anchor_points if point not in calibration_points]
     if missing:
@@ -546,9 +526,6 @@ def rebuild_calibration_from_relationships(new_rest_raw):
             }
         new_previous = new_raw
 
-    # A complete-turn check is meaningful only when all 20 slots are present.
-    # During incremental calibration, the first-five anchor may be rebuilt
-    # before later slots have been captured.
     if had_all_slots:
         closing_step = signed_circular_delta(old_rest_raw, old_previous)
         signed_total += closing_step
@@ -576,7 +553,6 @@ def override_calibration_point(point, new_raw):
 
 
 def calibrated_position():
-    """Return the nearest settled calibration point."""
     if raw_angle is None or not calibration_points:
         return None, None, "unknown"
     if wheel_moving or stable_since_ms is None:
@@ -611,7 +587,6 @@ def calibrated_position():
 
 
 def process_selection():
-    """Report one newly settled physical slot after movement."""
     global selection_armed, last_selection_slot, last_selection_error
     global last_selection_attempt_ms, pending_slot20_since_ms
 
@@ -712,7 +687,6 @@ def parse_http_url(url):
 
 
 def notify_now_playing(path, payload=None):
-    """Notify Now-Playing and require a successful HTTP response."""
     host, port = parse_http_url(NOW_PLAYING_URL)
     address = socket.getaddrinfo(host, port)[0][-1]
     client = socket.socket()
@@ -753,6 +727,101 @@ def notify_now_playing(path, payload=None):
         client.close()
 
 
+def notify_homebridge(desired_state):
+    address = socket.getaddrinfo(HOME_BRIDGE_HOST, HOME_BRIDGE_PORT)[0][-1]
+    client = socket.socket()
+    try:
+        client.settimeout(HOME_BRIDGE_TIMEOUT_S)
+        client.connect(address)
+        body = json.dumps({"state": "on" if desired_state else "off"}).encode()
+        path = "/api/v1/controls/{}".format(HOME_BRIDGE_CONTROL_ID)
+        request = (
+            "PUT {} HTTP/1.1\r\n"
+            "Host: {}\r\n"
+            "Content-Type: application/json\r\n"
+            "Content-Length: {}\r\n"
+            "Connection: close\r\n\r\n"
+        ).format(path, HOME_BRIDGE_HOST, len(body)).encode()
+        send_all(client, request)
+        send_all(client, body)
+        response = client.recv(512)
+        if not response:
+            raise OSError("empty Homebridge response")
+        first_line = response.split(b"\r\n", 1)[0].decode()
+        parts = first_line.split()
+        if len(parts) < 2 or not parts[1].isdigit():
+            raise OSError("malformed Homebridge response")
+        status_code = int(parts[1])
+        if status_code < 200 or status_code >= 300:
+            raise OSError("Homebridge returned HTTP {}".format(status_code))
+    finally:
+        client.close()
+
+
+def queue_homebridge_state(desired_state):
+    global homebridge_pending_state, homebridge_last_error
+    if not HOME_BRIDGE_ENABLED:
+        return
+    desired_state = bool(desired_state)
+    if homebridge_state == desired_state and homebridge_pending_state is None:
+        return
+    homebridge_pending_state = desired_state
+    homebridge_last_error = None
+
+
+def confident_homebridge_state():
+    if mills_active:
+        return True
+    if raw_angle is None or wheel_moving or stable_since_ms is None:
+        return None
+    if time.ticks_diff(time.ticks_ms(), stable_since_ms) < CALIBRATION_DISPLAY_STABLE_MS:
+        return None
+    position, _, position_state = calibrated_position()
+    if position_state == "match" and position == "REST":
+        return False
+    return None
+
+
+def synchronize_homebridge_startup():
+    global homebridge_startup_sync_pending
+    if not HOME_BRIDGE_ENABLED or not homebridge_startup_sync_pending:
+        return
+    if wifi is None or not wifi.isconnected():
+        return
+    state = confident_homebridge_state()
+    if state is None:
+        return
+    queue_homebridge_state(state)
+    homebridge_startup_sync_pending = False
+
+
+def process_homebridge_sync():
+    global homebridge_state, homebridge_pending_state
+    global homebridge_last_error, homebridge_last_sync_ms
+    global homebridge_last_attempt_ms
+
+    if not HOME_BRIDGE_ENABLED or homebridge_pending_state is None:
+        return
+    if wifi is None or not wifi.isconnected():
+        return
+    now = time.ticks_ms()
+    if (homebridge_last_attempt_ms is not None
+            and time.ticks_diff(now, homebridge_last_attempt_ms) < HOME_BRIDGE_RETRY_MS):
+        return
+    desired_state = homebridge_pending_state
+    homebridge_last_attempt_ms = now
+    try:
+        notify_homebridge(desired_state)
+        homebridge_state = desired_state
+        homebridge_pending_state = None
+        homebridge_last_error = None
+        homebridge_last_sync_ms = time.ticks_ms()
+        print("Homebridge mills-active:", "on" if desired_state else "off")
+    except Exception as error:
+        homebridge_last_error = str(error)
+        print("Homebridge sync failed:", homebridge_last_error)
+
+
 def safe_remove(path):
     try:
         os.remove(path)
@@ -761,7 +830,6 @@ def safe_remove(path):
 
 
 def read_request(client):
-    """Read request headers and return method, path, headers, initial body."""
     data = b""
     while b"\r\n\r\n" not in data and len(data) <= 4096:
         chunk = client.recv(512)
@@ -798,7 +866,6 @@ def read_request(client):
 
 
 def receive_ota_file(client, initial_body, content_length):
-    """Receive a complete upload into the temporary file."""
     if len(initial_body) > content_length:
         raise ValueError("request body exceeds Content-Length")
 
@@ -820,8 +887,6 @@ def receive_ota_file(client, initial_body, content_length):
 
 
 def install_ota_file():
-    """Validate and install the complete staged file, retaining a backup."""
-    # compile() checks syntax without executing the uploaded program.
     with open(OTA_TEMP_FILE, "rb") as upload:
         source = upload.read()
     compile(source, OTA_TEMP_FILE, "exec")
@@ -831,7 +896,6 @@ def install_ota_file():
     try:
         os.rename(OTA_TEMP_FILE, "main.py")
     except Exception:
-        # Restore the known working program if the second rename fails.
         os.rename(OTA_BACKUP_FILE, "main.py")
         raise
 
@@ -863,7 +927,6 @@ def update_sensor():
 
         changed = False
         if previous_raw_angle is not None:
-            # Use the shortest signed path so 4095 -> 0 is small movement.
             delta = (current_raw - previous_raw_angle + 2048) % 4096 - 2048
             changed = abs(delta) >= MOVEMENT_THRESHOLD_RAW
         previous_raw_angle = current_raw
@@ -909,6 +972,9 @@ def status_json():
         '"ota_status":"{}","last_now_playing_event":{},'
         '"idle_pending_ms":{},"calibration_points":{},'
         '"pending_slot20_ms":{},'
+        '"homebridge_enabled":{},"homebridge_state":{},'
+        '"homebridge_pending_state":{},"homebridge_last_error":{},'
+        '"homebridge_last_sync_age_ms":{},'
         '"calibrated_position":{},"calibrated_distance_raw":{},'
         '"calibrated_position_state":"{}","selection_armed":{},'
         '"last_selection_slot":{},"last_selection_error":{}}}'
@@ -931,6 +997,11 @@ def status_json():
         "null" if pending_idle_since_ms is None else time.ticks_diff(time.ticks_ms(), pending_idle_since_ms),
         len(calibration_points),
         "null" if pending_slot20_since_ms is None else time.ticks_diff(time.ticks_ms(), pending_slot20_since_ms),
+        "true" if HOME_BRIDGE_ENABLED else "false",
+        "null" if homebridge_state is None else json.dumps("on" if homebridge_state else "off"),
+        "null" if homebridge_pending_state is None else json.dumps("on" if homebridge_pending_state else "off"),
+        "null" if homebridge_last_error is None else json.dumps(homebridge_last_error),
+        "null" if homebridge_last_sync_ms is None else time.ticks_diff(time.ticks_ms(), homebridge_last_sync_ms),
         "null" if position is None else '"{}"'.format(position),
         "null" if position_distance is None else position_distance,
         position_state,
@@ -975,6 +1046,7 @@ def status_html():
         "<p><b>Angle stable for:</b> {} ms</p>"
         "<p><b>Idle confirmation:</b> {} </p>"
         "<p><b>Slot 20 confirmation:</b> {} </p>"
+        "<p><b>Homebridge mills-active:</b> {} (pending: {})</p>"
         "<p><b>Calibrated points:</b> {}</p>"
         "<p><b>Current calibrated position:</b> {}</p>"
         "<p><b>Selection reporting armed:</b> {}</p>"
@@ -999,6 +1071,12 @@ def status_html():
         "pending" if pending_idle_since_ms is not None else "not pending",
         "pending for {} ms".format(time.ticks_diff(time.ticks_ms(), pending_slot20_since_ms))
         if pending_slot20_since_ms is not None else "not pending",
+        "disabled" if not HOME_BRIDGE_ENABLED
+        else "on" if homebridge_state is True
+        else "off" if homebridge_state is False
+        else "unknown",
+        "none" if homebridge_pending_state is None
+        else "on" if homebridge_pending_state else "off",
         calibrated,
         current_position,
         "YES" if selection_armed else "NO",
@@ -1380,9 +1458,6 @@ def handle_request(client):
                     print("RECORD METADATA ERROR:", error)
                     http_response(client, "400 Bad Request", json.dumps({"error": str(error)}))
         elif path == STACK_MOVING_PATH and method in ("GET", "POST"):
-            # Shelly may repeat a power condition while it remains true.
-            # Treat only the inactive -> active transition as a new event,
-            # but let renewed activity cancel a pending idle confirmation.
             if mills_active:
                 if pending_idle_since_ms is not None:
                     pending_idle_since_ms = None
@@ -1404,6 +1479,7 @@ def handle_request(client):
                     last_stack_event_ms = time.ticks_ms()
                     stack_event_count += 1
                     last_now_playing_event = "start"
+                    queue_homebridge_state(True)
                     print("Shelly: Mills stack moving (event {})".format(stack_event_count))
                 except Exception as error:
                     last_event_error = "Now-Playing start failed: {}".format(error)
@@ -1455,7 +1531,6 @@ def handle_request(client):
 
 
 def process_pending_idle():
-    """End the session only after low-power state remains long enough."""
     global mills_active, pending_idle_since_ms, wheel_moved_while_active
     global selection_armed
     global last_event_error, last_now_playing_event, pending_slot20_since_ms
@@ -1474,10 +1549,9 @@ def process_pending_idle():
         selection_armed = False
         last_now_playing_event = "stop"
         last_event_error = None
+        queue_homebridge_state(False)
         print("Shelly: Mills idle confirmed")
     except Exception as error:
-        # Keep Mills active through a transient Now-Playing outage and retry
-        # after another confirmation interval.
         pending_idle_since_ms = time.ticks_ms()
         last_event_error = "Now-Playing stop failed: {}".format(error)
         last_now_playing_event = "stop failed"
@@ -1555,6 +1629,10 @@ while True:
                     server = start_server()
                 except Exception as error:
                     print("Unable to start server:", error)
+            if wifi.isconnected():
+                homebridge_startup_sync_pending = True
 
+    synchronize_homebridge_startup()
+    process_homebridge_sync()
     gc.collect()
     time.sleep_ms(10)

@@ -111,6 +111,11 @@ active session. Shelly low-power confirmation during that interval discards
 the ambiguous angle as the return-to-REST pass; sustained active power allows
 it to be reported as a real slot-20 selection.
 
+The Pico mirrors the existing confirmed active/idle state transitions to the
+generic Homebridge virtual control `mills-active` at `10.0.0.5:8787`. This
+keeps HomeKit lighting automation outside the firmware: Homebridge/HomeKit
+owns scenes and brightness, while the Pico reports only Mills state.
+
 The same calibration page provides editable title/artist metadata for slots
 1–20. Record metadata is persisted separately from `mills_calibration.json` in
 `mills_records.json`, so changing a record description does not affect sensor
