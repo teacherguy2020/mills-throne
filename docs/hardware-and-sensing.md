@@ -19,7 +19,7 @@ stack/motor moving     >200 W
 ```
 
 The current temporary Shelly thresholds are approximately `>55 W` for
-activity and `<50 W` for idle. Pico-side idle debounce smooths short dips;
+activity and `<50 W` for idle. A 5-second Pico-side idle debounce smooths short dips;
 these remain test values, not production values. Continue capturing behavior
 during loading, rejecting, and multiple selections before finalizing anything.
 

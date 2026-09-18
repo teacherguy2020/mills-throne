@@ -65,7 +65,7 @@ MOVEMENT_HOLD_MS = 250
 # Shelly reports a threshold crossing, so do not end a Mills session on
 # one brief low-power sample. This is provisional until AS5600 REST sensing
 # becomes the authoritative end-of-session signal.
-IDLE_CONFIRM_MS = 20000
+IDLE_CONFIRM_MS = 5000
 CALIBRATION_FILE = "mills_calibration.json"
 CALIBRATION_TEMP_FILE = "mills_calibration.new.json"
 CALIBRATION_SAMPLE_COUNT = 15

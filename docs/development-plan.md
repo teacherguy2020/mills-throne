@@ -18,8 +18,8 @@ these values as production thresholds.
 The Pico accepts Shelly activity/idle transitions and forwards only the first
 active and confirmed final idle transition to Now-Playing. The routes switch
 the Denon and are idempotent/retryable. The current temporary Shelly
-thresholds are approximately `>55 W` and `<50 W`, with Pico-side idle
-debounce. Now-Playing's Mills selection route is deployed for testing.
+thresholds are approximately `>55 W` and `<50 W`, with a 5-second Pico-side
+idle debounce. Now-Playing's Mills selection route is deployed for testing.
 
 ## Phase 4 — Mechanical inspection and installation
 

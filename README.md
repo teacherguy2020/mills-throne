@@ -111,7 +111,7 @@ At confirmed session end, Now-Playing switches the Denon back to `Aux 1` and the
 
 ## Status
 
-Shelly activity webhooks, AS5600 bench testing, integrated Pico diagnostics, authenticated OTA updates, provisional REST/1–20 calibration, and settled-slot reporting are working. Live testing has confirmed that the detected physical slot can select the corresponding `Mills Playlist` entry in Now-Playing. The current Shelly thresholds are approximately `>55 W` for activity and `<50 W` for idle, with Pico-side idle debounce. The magnetic field remains flagged weak, and multi-record sequencing, tolerance windows, final REST confirmation, and MPD state restoration remain experimental.
+Shelly activity webhooks, AS5600 bench testing, integrated Pico diagnostics, authenticated OTA updates, provisional REST/1–20 calibration, and settled-slot reporting are working. Live testing has confirmed that the detected physical slot can select the corresponding `Mills Playlist` entry in Now-Playing. The current Shelly thresholds are approximately `>55 W` for activity and `<50 W` for idle, with a 5-second Pico-side idle debounce. The magnetic field remains flagged weak, and multi-record sequencing, tolerance windows, final REST confirmation, and MPD state restoration remain experimental.
 
 ## Pico software and OTA updates
 
