@@ -1322,7 +1322,12 @@ def handle_request(client):
                     pending_idle_since_ms = None
                     wheel_moved_while_active = False
                     stable_since_ms = None
-                    selection_armed = False
+                    # Shelly activity can arrive after the wheel has already
+                    # settled on its slot. Arm immediately so the next
+                    # settled valid position is reported even when no
+                    # post-start movement is observed. REST is ignored here,
+                    # and later movement still re-arms selection normally.
+                    selection_armed = True
                     last_selection_slot = None
                     last_selection_error = None
                     last_selection_attempt_ms = None
